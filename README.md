@@ -86,9 +86,9 @@ miffbuggpy/
 ### Build Steps
 
 ```powershell
-# Clone the repository with submodules
-git clone --recurse-submodules https://github.com/your-username/miffbuggpy.git
-cd miffbuggpy
+# Clone the repository
+git clone https://github.com/Yahiake/MiffBuggPy.git
+cd MiffBuggPy
 
 # Configure CMake with Release config and AVX2 enabled
 cmake -B build -S . -G "Visual Studio 17 2022" -A x64
