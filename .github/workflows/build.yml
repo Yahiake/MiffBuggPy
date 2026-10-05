@@ -59,7 +59,9 @@ jobs:
             libxinerama-dev \
             libxext-dev \
             libfreetype6-dev \
-            libxcursor-dev
+            libxcursor-dev \
+            libxrandr-dev \
+            libxcomposite-dev
 
       - name: Configure CMake
         run: cmake -B build -S . ${{ matrix.cmake_args }}
