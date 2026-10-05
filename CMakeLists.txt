@@ -58,19 +58,37 @@ endif()
 if(MSVC)
     target_compile_options(RTNeural PUBLIC /arch:AVX2)
     target_compile_definitions(RTNeural PUBLIC RTNEURAL_AVX_ENABLED=1 RTNEURAL_DEFAULT_ALIGNMENT=32)
-    message(STATUS "MiffBuggPy -- AVX2 enabled on RTNeural")
+    message(STATUS "MiffBuggPy -- AVX2 enabled on RTNeural (MSVC)")
+elseif(APPLE)
+    target_compile_definitions(RTNeural PUBLIC RTNEURAL_DEFAULT_ALIGNMENT=32)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64")
+        target_compile_options(RTNeural PUBLIC -mavx2 -mfma)
+        target_compile_definitions(RTNeural PUBLIC RTNEURAL_AVX_ENABLED=1)
+    endif()
+    message(STATUS "MiffBuggPy -- macOS build configured")
 else()
-    message(WARNING "MiffBuggPy -- not MSVC; /arch:AVX2 not applied. v1 targets Windows x64 only.")
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+        target_compile_options(RTNeural PUBLIC -mavx2 -mfma)
+        target_compile_definitions(RTNeural PUBLIC RTNEURAL_AVX_ENABLED=1)
+    endif()
+    target_compile_definitions(RTNeural PUBLIC RTNEURAL_DEFAULT_ALIGNMENT=32)
+    message(STATUS "MiffBuggPy -- Linux build configured")
 endif()
 
 # ---------------------------------------------------------------------------
-# The plugin. VST3 and Standalone only, Windows x64 only, deliberately.
+# The plugin. VST3, Standalone, and AU on macOS.
 # ---------------------------------------------------------------------------
+if(APPLE)
+    set(MIFFBUGGPY_FORMATS VST3 AU Standalone)
+else()
+    set(MIFFBUGGPY_FORMATS VST3 Standalone)
+endif()
+
 juce_add_plugin(MiffBuggPy
-    COMPANY_NAME CrunchyBerries
-    PLUGIN_MANUFACTURER_CODE CbBr
+    COMPANY_NAME "Yahia Kemari"
+    PLUGIN_MANUFACTURER_CODE YhKm
     PLUGIN_CODE MbfB
-    FORMATS VST3 Standalone
+    FORMATS ${MIFFBUGGPY_FORMATS}
     ProductName "MiffBuggPy"
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT FALSE
@@ -154,17 +172,19 @@ add_custom_target(MiffBuggPyFixBundle ALL
 # will list, and the entire point of the fix step is to make that impossible to
 # ship quietly.
 # ---------------------------------------------------------------------------
-set(miffbuggpyPackageDir "${CMAKE_CURRENT_SOURCE_DIR}/dist")
+if(WIN32)
+    set(miffbuggpyPackageDir "${CMAKE_CURRENT_SOURCE_DIR}/dist")
 
-add_custom_target(MiffBuggPyPackage ALL
-    COMMAND ${CMAKE_COMMAND}
-            "-DSTAGE=$<TARGET_FILE_DIR:MiffBuggPy>"
-            "-DDEST=${miffbuggpyPackageDir}"
-            "-DREADMESRC=${CMAKE_CURRENT_SOURCE_DIR}/packaging/README.txt"
-            "-DBUNDLE=${PROJECT_NAME}.vst3"
-            "-DEXE=${PROJECT_NAME}.exe"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/Package.cmake"
-    DEPENDS MiffBuggPyFixBundle MiffBuggPy_Standalone
-    COMMENT "Packaging MiffBuggPy into dist/"
-    VERBATIM
-)
+    add_custom_target(MiffBuggPyPackage ALL
+        COMMAND ${CMAKE_COMMAND}
+                "-DSTAGE=$<TARGET_FILE_DIR:MiffBuggPy>"
+                "-DDEST=${miffbuggpyPackageDir}"
+                "-DREADMESRC=${CMAKE_CURRENT_SOURCE_DIR}/packaging/README.txt"
+                "-DBUNDLE=${PROJECT_NAME}.vst3"
+                "-DEXE=${PROJECT_NAME}.exe"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/Package.cmake"
+        DEPENDS MiffBuggPyFixBundle MiffBuggPy_Standalone
+        COMMENT "Packaging MiffBuggPy into dist/"
+        VERBATIM
+    )
+endif()

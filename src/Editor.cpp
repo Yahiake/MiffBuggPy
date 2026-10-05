@@ -221,8 +221,12 @@ void PluginEditor::refreshStatus()
     for (int i = 0; i < order.size(); ++i)
         orderText += (i > 0 ? juce::String (", ") : juce::String()) + order[i];
 
+    // Volume is named explicitly rather than being absent from the line, because its
+    // absence from `order` is a design decision and a reader of the UI has no way to
+    // tell it apart from a knob that was simply forgotten.
     status.setColour (juce::Label::textColourId, kTextDim);
-    status.setText ("Conditioning: " + orderText
+    status.setText ("Network sees: " + orderText
+                      + juce::String ("\nVolume: output gain (not learned)")
                       + juce::String ("\nValidation ESR: ")
                       + juce::String (processor.getExportValEsr() * 100.0, 3) + " %",
                     juce::dontSendNotification);

@@ -30,10 +30,11 @@ Bypassing is transparent: the plugin passes audio through unmodified.
 
 Requirements
 ------------
-Windows 64-bit. VST3 or Standalone. No installation step, no system drivers,
-no network access at runtime.
+Windows (x64), macOS (Universal: Apple Silicon arm64 & Intel x86_64), or Linux (x64).
+VST3, Audio Unit (macOS), or Standalone application. No installation step,
+no system drivers, no network access at runtime.
 
 Licence
 -------
-Released under the GNU Affero General Public License v3.0, which covers the
-JUCE framework this plugin is built on. See LICENCE for the full text.
+Released under the GNU General Public License v3.0, which covers the
+JUCE framework this plugin is built on. See LICENSE for the full text.

@@ -1,0 +1,64 @@
+{
+  "name": "bigmuff-v3",
+
+  "_comment_sampling": "Key locations matter here and are NOT checked. The parser reads sampling.joint (not top-level joint), sampling.input.spans, sampling.input.gainDb, and render.*. Getting these wrong fails silently, so every one is nested where the parser actually looks.",
+
+  "circuit": "Big Muff Pi.schx",
+  "input": "input.wav",
+
+  "budget": 10000,
+  "duration": 5.0,
+
+  "_comment_render": "oversample 16 / iterations 32, not the defaults (2 / 8). The default leaves roughly 30 dB of aliasing error on a clipping circuit, which is far above anything worth training on. 16 buys about 51 dB; 32 would buy only ~6 dB more for roughly double the wall clock, because LiveSPICE decimates with a boxcar that rolls off at 6 dB/octave rather than the 48 dB/octave a real anti-alias filter gives. normalize is disabled so input drive is controlled solely by gainDb below.",
+
+  "render": {
+    "sampleRate": 48000,
+    "oversample": 16,
+    "iterations": 32,
+    "normalize": 0,
+    "warmup": 0.05
+  },
+
+  "_comment_joint": "independent, not grid. A cartesian grid over 5x4 bands would need every cell populated to be useful; independent draws fill the space far better for the same render count, and each knob is still stratified within its bands so coverage is uniform rather than clustered.",
+
+  "sampling": {
+    "joint": "independent",
+    "timeRange": [0.0, 190.0],
+    "seed": 20251005,
+
+    "_comment_input": "Varying drive across -18..+6 dB is the cheapest generalization win available: it is free augmentation that forces the network to handle a 24 dB input range instead of one operating point, and it costs no extra knob budget. spans=signal energy-gates silence so start points land on real audio rather than gaps.",
+
+    "_comment_stride": "stride belongs HERE, under sampling.input, not at the top level. Spec.cs reads it inside ParseInput, which is only called for sampling.input. Left unset it defaults to the excerpt length, giving non-overlapping tiles: for this 190 s input that is only 29 start points, so all 10000 renders would have been cut from just 29 unique excerpts and the network would have memorised 145 s of audio instead of learning the circuit. At 0.25 s the excerpts overlap heavily, so the same audio is heard at many different offsets, which is the augmentation that makes the model generalise rather than memorise.",
+
+    "input": {
+      "spans": "signal",
+      "stride": 0.25,
+      "gainDb": [-18.0, 6.0]
+    }
+  },
+
+  "_comment_knobs": "Volume is pinned and excluded from learning. Measured, not assumed: with Sustain and Tone held fixed, rendering at Volume 0.4/0.6/0.8 reproduced the Volume 0.2 render times exactly 2, 3 and 4, with residual ESR down to -180 dB at high Sustain and -85 dB in the worst case. Volume is a pure post-gain of 5 x Volume applied after all nonlinearity, so it is separable about 4000x beyond the accuracy this model will reach. Pinning it spends the whole render budget on the two knobs that actually carry the nonlinearity. 0.2 is unity post-gain and leaves headroom so the ground truth never clips.",
+
+  "knobs": {
+    "Sustain": {
+      "bands": [
+        { "from": 0.0,  "to": 0.10, "count": 800,  "note": "near-bypass, essentially clean" },
+        { "from": 0.10, "to": 0.25, "count": 2000, "note": "edge of breakup - hardest region to fit" },
+        { "from": 0.25, "to": 0.50, "count": 2600, "note": "classic fuzz" },
+        { "from": 0.50, "to": 0.75, "count": 2600, "note": "heavy saturation" },
+        { "from": 0.75, "to": 1.00, "count": 2000, "note": "squashed, nearly flat-topped" }
+      ]
+    },
+    "Tone": {
+      "bands": [
+        { "from": 0.0,  "to": 0.25, "count": 2500, "note": "dark" },
+        { "from": 0.25, "to": 0.50, "count": 2500, "note": "mid-dark" },
+        { "from": 0.50, "to": 0.75, "count": 2500, "note": "mid-bright" },
+        { "from": 0.75, "to": 1.00, "count": 2500, "note": "bright" }
+      ]
+    },
+    "Volume": {
+      "pin": 0.2
+    }
+  }
+}

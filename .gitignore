@@ -32,6 +32,10 @@ venv/
 # Datasets and renders. These are large and regenerable from the manifest plus the
 # circuit file, so they do not belong in version control.
 datasets/
+pack/
+*.f32
+*.npy
+*.pt
 *.wav
 !parity/fixtures/*.wav
 models_out/

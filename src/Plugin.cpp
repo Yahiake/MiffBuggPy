@@ -128,7 +128,8 @@ bool probeNetwork (Network& net, juce::String& errorOut)
     std::array<float, kInputSize> frame {};
     frame[0] = 0.25f;
     for (int k = 0; k < kNumParams; ++k)
-        frame[(size_t) kFeatureSlot[k]] = 0.5f;
+        if (kFeatureSlot[(size_t) k] >= 0)
+            frame[(size_t) kFeatureSlot[(size_t) k]] = 0.5f;
 
     net.reset();
 
@@ -241,21 +242,34 @@ bool PluginProcessor::loadModel()
     if (! validateGeometry (j, modelError))
         return false;
 
-    // The conditioning order is baked into the first layer's weights. If the
-    // exported model ever changes its declared knob order, the cross-wiring is
-    // silent and the failure shows up as "the knobs feel wrong", so it is
-    // checked here instead.
-    if (modelKnobOrder.size() == kNumKnobs)
+    // The conditioning order is baked into the first layer's weights. If the exported
+    // model ever changes its declared knob order, the cross-wiring is silent and the
+    // failure shows up as "the knobs feel wrong", so it is checked here instead.
+    //
+    // Only the conditioned knobs are compared. Volume appears in the manifest but not in
+    // the feature vector, so a model that still listed it would mean the export was made
+    // by an older trainer whose weights assume a Volume input this build does not send.
+    if (modelKnobOrder.size() == (size_t) kNumKnobs)
     {
-        const juce::String expected[] { "Volume", "Sustain", "Tone" };
-        for (int i = 0; i < kNumParams; ++i)
-            if (modelKnobOrder[i] != expected[i])
+        static const char* expected[] { "Sustain", "Tone" };
+        for (int i = 0; i < kNumKnobs; ++i)
+            if (modelKnobOrder[(size_t) i] != expected[i])
             {
                 modelError = juce::String ("model.json conditioning order is [")
-                             + modelKnobOrder[0] + ", " + modelKnobOrder[1] + ", " + modelKnobOrder[2]
-                             + "], this build is wired for [Volume, Sustain, Tone].";
+                             + modelKnobOrder[0] + ", " + modelKnobOrder[1]
+                             + "], this build is wired for [Sustain, Tone].";
                 return false;
             }
+    }
+
+    // A model exported before Volume was pinned declared it as a conditioning channel and
+    // therefore has a wider first layer. Rejecting it by name gives a usable message;
+    // letting validateGeometry catch the width difference would report a number instead.
+    if (modelKnobOrder.contains ("Volume"))
+    {
+        modelError = "model.json conditions the network on Volume, but Volume is applied as "
+                     "output gain in this build. Re-export from the current trainer.";
+        return false;
     }
 
     model.parseJson (j);
@@ -366,12 +380,16 @@ void PluginProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         for (int i = 0; i < kNumParams; ++i)
         {
             s[(size_t) i] += smoothingCoeff * (targets[(size_t) i].load() - s[(size_t) i]);
-            frame[(size_t) kFeatureSlot[i]] = s[(size_t) i];
+
+            // Slot -1 is Volume: smoothed like the others so the gain does not step, but
+            // never written into the feature vector.
+            if (kFeatureSlot[(size_t) i] >= 0)
+                frame[(size_t) kFeatureSlot[(size_t) i]] = s[(size_t) i];
         }
 
         // The network carries its own hidden state across the block boundary, which
         // is what makes continuous playback correct rather than block-by-block.
-        const auto y = model.forward (frame.data());
+        const auto y = model.forward (frame.data()) * volumeGainFor (s[(size_t) kVolume]);
 
         for (int ch = 0; ch < numChannels; ++ch)
             buffer.setSample (ch, n, y);

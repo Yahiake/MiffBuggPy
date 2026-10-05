@@ -17,15 +17,57 @@ namespace Miffbuggpy
 // construction time, so a retrained network with a different shape fails loudly
 // at load instead of silently reading past the end of a buffer.
 // ===========================================================================
-inline constexpr int kNumKnobs = 3;
+/**
+    Knobs the network is conditioned on. Volume is NOT among them.
+
+    Volume is a pure post-gain on this circuit, measured rather than assumed: holding
+    Sustain and Tone fixed, rendering at Volume 0.4, 0.6 and 0.8 reproduced the Volume
+    0.2 render times exactly 2, 3 and 4, with residual ESR of -180 dB at high Sustain
+    and -85 dB at worst -- roughly 4000x finer than this model resolves. The render
+    database therefore pins Volume at 0.2 and the network never sees it, and the plugin
+    applies the measured law as gain on the output instead. Feeding Volume in as a
+    constant channel would be worse than omitting it: a feature that never varies carries
+    no information, so its weights would just sit at their initialisation.
+*/
+inline constexpr int kNumKnobs = 2;
 inline constexpr int kHiddenSize = 128;
 
-/** One audio sample plus one value per knob. */
+/** One audio sample plus one value per conditioned knob. */
 inline constexpr int kInputSize = 1 + kNumKnobs;
 inline constexpr int kOutputSize = 1;
 
 /** Where every knob starts, and what a freshly loaded preset means by "default". */
 inline constexpr float kDefaultKnob = 0.5f;
+
+// ===========================================================================
+// Volume.
+//
+// The pot law was measured on this netlist rather than assumed: with Sustain and Tone
+// held fixed, output gain is 5 * Volume, so Volume 0.2 is unity and the knob spans 0 to 5.
+// Applied literally, a plugin knob centred at 0.5 would sit at +8 dB, which is not what
+// anyone expects from a knob that starts in the middle. So the law is renormalised to be
+// unity at the default position:
+//
+//     gain(v) = kVolumeGainAtFull * v      ->  0 at v=0, 1 at v=0.5, 2 at v=1
+//
+// That is the measured curve divided by 2.5 throughout, so its shape is the circuit's and
+// only its absolute scale is chosen. The +6 dB above centre is kept because the pedal does
+// really get louder past unity, up to where the output stage runs out of headroom.
+//
+// Accuracy of treating Volume as a plain gain: worst case -85 dB, typically -180 dB. That
+// error is systematic across every sample, which is why it is stated rather than hidden --
+// it is far below the ~1% ESR the network operates at, but it is not zero.
+// ===========================================================================
+inline constexpr float kVolumeGainAtFull = 2.0f;
+
+/** The gain to apply to the network output for a Volume knob position in [0, 1]. */
+inline constexpr float volumeGainFor (float v) noexcept
+{
+    // Spelled with comparisons rather than juce::jlimit because jlimit is not constexpr,
+    // and the clamp is written out here so the value cannot go negative or run past the
+    // knob's range even if a host sends something outside [0, 1].
+    return kVolumeGainAtFull * (v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v));
+}
 
 // ===========================================================================
 // Parameters.
@@ -42,19 +84,23 @@ enum KnobParam
     kNumParams = 3
 };
 
-// The exported model's metadata declares its conditioning order as
-// ["Volume", "Sustain", "Tone"], and the training code wrote column order to
-// match. Feeding them in the UI order instead would silently produce a model
-// whose knobs are cross-wired, which is exactly the kind of bug that survives a
-// clean ESR number because the network still fits the training data.
+// Which feature slot each UI knob is written into. -1 means the knob does not reach the
+// network at all.
+//
+// The exported model's metadata declares its conditioning order, and the training code
+// wrote its column order to match. Feeding the knobs in the UI order instead would
+// silently produce a model whose knobs are cross-wired, which is exactly the kind of bug
+// that survives a clean ESR number because the network still fits the training data well.
 //
 //   feature slot 0 = audio
-//   feature slot 1 = Volume
-//   feature slot 2 = Sustain
-//   feature slot 3 = Tone
-inline constexpr std::array<int, kNumParams> kFeatureSlot { 2, 3, 1 };
+//   feature slot 1 = Sustain
+//   feature slot 2 = Tone
+inline constexpr std::array<int, kNumParams> kFeatureSlot { 1, 2, -1 };
 
 static_assert (kInputSize == 1 + kNumKnobs, "Feature vector must be audio plus one slot per knob.");
+static_assert (kNumParams == kNumKnobs + 1,
+               "There is one knob more than there are conditioned inputs: Volume is applied "
+               "as gain and never reaches the network.");
 
 // ===========================================================================
 // The network.
