@@ -1,0 +1,120 @@
+.. Copyright (c) 2016, Johan Mabille and Sylvain Corlay
+
+   Distributed under the terms of the BSD 3-Clause License.
+
+   The full license is in the file LICENSE, distributed with this software.
+
+.. _Writing Vectorized Code:
+
+Writing Vectorized Code
+=======================
+
+Assume that we have a simple function that computes the mean of two vectors, something like:
+
+.. literalinclude:: ../../test/doc/writing_vectorized_code.cpp
+
+How can we use `xsimd` to take advantage of vectorization?
+
+Explicit Use of an Instruction Set
+----------------------------------
+
+`xsimd` provides the template class :cpp:class:`xsimd::batch` parametrized by ``T`` and ``A`` types where ``T`` is the type of the values involved in SIMD
+instructions and ``A`` is the target architecture. If you know which instruction set is available on your machine, you can directly use the corresponding specialization
+of ``batch``. For instance, assuming the AVX instruction set is available, the previous code can be vectorized the following way:
+
+.. literalinclude:: ../../test/doc/explicit_use_of_an_instruction_set_mean.cpp
+
+Note that the code is written in a form that's independent from the actual
+vector register width.
+
+However, if you want to write code that is portable, you cannot rely on the use of ``batch<double, xsimd::avx>``.
+Indeed this won't compile on a CPU where only SSE2 instruction set is available for instance. Fortunately, if you don't set the second template parameter, `xsimd` picks the best architecture among the one available, based on the compiler flag you use.
+
+
+Aligned vs Unaligned Memory
+---------------------------
+
+In the previous example, you may have noticed the :cpp:func:`xsimd::batch::load_unaligned` and :cpp:func:`xsimd::batch::store_unaligned` functions. These
+are meant for loading values from contiguous dynamically allocated memory into SIMD registers and
+reciprocally. When dealing with memory transfer operations, some instructions sets required the memory
+to be aligned by a given amount, others can handle both aligned and unaligned modes. In that latter case,
+operating on aligned memory is generally faster than operating on unaligned memory.
+
+`xsimd` provides an aligned memory allocator, namely :cpp:class:`xsimd::aligned_allocator` which follows the standard requirements, so it can be used
+with STL containers. Let's change the previous code so it can take advantage of this allocator:
+
+.. literalinclude:: ../../test/doc/explicit_use_of_an_instruction_set_mean_aligned.cpp
+
+
+Memory Alignment and Tag Dispatching
+------------------------------------
+
+You may need to write code that can operate on any type of vectors or arrays, not only the STL ones. In that
+case, you cannot make assumption on the memory alignment of the container. `xsimd` provides a tag dispatching
+mechanism that allows you to easily write such a generic code:
+
+
+.. literalinclude:: ../../test/doc/explicit_use_of_an_instruction_set_mean_tag_dispatch.cpp
+
+
+Here, the ``Tag`` template parameter can be :cpp:class:`xsimd::aligned_mode` or :cpp:class:`xsimd::unaligned_mode`. Assuming the existence
+of a ``get_alignment_tag`` meta-function in the code, the previous code can be invoked this way:
+
+.. code::
+
+    mean(a, b, res, get_alignment_tag<decltype(a)>());
+
+Writing Arch-Independent Code
+-----------------------------
+
+If your code may target either SSE2, AVX2 or AVX512 instruction set, `xsimd`
+make it possible to make your code even more generic by using the architecture
+as a template parameter:
+
+.. literalinclude:: ../../test/doc/explicit_use_of_an_instruction_set_mean_arch_independent.cpp
+
+Then you just need to ``#include`` that file, force instantiation for a specific
+architecture and pass the appropriate flag to the compiler. For instance:
+
+.. literalinclude:: ../../test/doc/sum_sse2.cpp
+
+
+This can be useful to implement runtime dispatching, based on the instruction set detected at runtime. `xsimd` provides a generic machinery :cpp:func:`xsimd::dispatch()` to implement
+this pattern. Based on the above example, instead of calling ``mean{}(arch, a, b, res, tag)``, one can use ``xsimd::dispatch(mean{})(a, b, res, tag)``. More about this can be found in the :ref:`Arch Dispatching` section.
+
+Breaking out of xsimd
+---------------------
+
+Sometimes ``xsimd`` may not give you the whole availability of the instruction set you
+are targeting. This is not specific to this library but to all libraries that
+abstract something.
+
+``xsimd`` give you the possibility to break out of its :cpp:class:`~xsimd::batch` class
+and getting the underlying intrinsic register type.
+This is useful when an instruction set expose some intrinsicts for applications (*e.g.* video
+processing, cryptography...) that are too specific to include in ``xsimd``, or when some
+instructions are currently missing.
+
+There are many ways a user could add a special cases in their arch-independent SIMD code.
+One that is simple and compiles on all platforms is using C++17 ``if constexpr``.
+
+.. code:: cpp
+
+    template<typename Arch>
+    auto sign_i8(
+        xsimd::batch<int8_t, Arch> const& x,
+        xsimd::batch<int8_t, Arch> const& y
+    ) -> xsimd::batch<uint8_t, Arch> {
+         // Dedicated instruction dispatch at compile time
+         if constexpr (std::is_same_v<Arch, xsimd::avx2>){
+             // Automatic conversion back and forth between xsimd::batch and native types
+             return _mm256_sign_epi8(x, y);
+             // When compiler complains we can be more explicit
+             return xsimd::batch<int8_t, Arch>(_mm256_sign_epi8(x.to_native(), y.to_native()));
+         }
+
+         // General xsimd implementation
+         auto const zero = xsimd::batch<uint8_t, Arch>(0);
+         auto const c = xsimd::select(b < 0, -a, a);
+         return xsimd::select(b == zero, zero, c);
+    }

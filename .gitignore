@@ -1,0 +1,38 @@
+# Build output
+build/
+build-*/
+dist/
+JuceLibraryCode/
+
+# Compiled artefacts
+*.obj
+*.o
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.dll
+*.exe
+*.pyd
+
+# JUCE / IDE
+.vs/
+.vscode/
+.idea/
+*.user
+CMakeSettings.json
+CMakeUserPresets.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Datasets and renders. These are large and regenerable from the manifest plus the
+# circuit file, so they do not belong in version control.
+datasets/
+*.wav
+!parity/fixtures/*.wav
+models_out/
+runs/

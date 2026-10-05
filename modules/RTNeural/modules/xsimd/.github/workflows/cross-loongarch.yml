@@ -1,0 +1,54 @@
+name: LoongArch64 cross-compilation build
+on: [push, pull_request]
+concurrency:
+  group: ${{ github.workflow }}-${{ github.job }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    name: 'LoongArch64 ${{ matrix.simd.arch }}'
+    strategy:
+      fail-fast: false
+      matrix:
+        simd:
+          - { arch: 'lsx', lasx: 0, cpu: 'la464,lsx=on,lasx=off' }
+          - { arch: 'lasx', lasx: 1, cpu: 'la464,lsx=on,lasx=on' }
+    steps:
+    - name: Checkout xsimd
+      uses: actions/checkout@v6
+    - name: Setup compiler
+      id: setup-compiler
+      uses: ./.github/actions/setup-cross-compiler-apt
+      with:
+        compiler: gcc
+        version: '14'
+        target: loongarch64-linux-gnu
+        qemu: 'true'
+    - name: Setup Ninja
+      run: |
+        sudo apt-get -y -qq install ninja-build
+    - name: Setup
+      run: >-
+        cmake -S . -B _build
+        -GNinja
+        -DBUILD_TESTS=ON
+        -DDOWNLOAD_DOCTEST=ON
+        -DCMAKE_BUILD_TYPE=Release
+        -DTARGET_ARCH=${{ matrix.simd.arch }}
+    - name: Build
+      run: cmake --build _build
+    - name: Set CPU feature test expectations
+      run: |
+        echo "XSIMD_TEST_CPU_ASSUME_SSE4_2=0" >> "$GITHUB_ENV"
+        echo "XSIMD_TEST_CPU_ASSUME_NEON64=0" >> "$GITHUB_ENV"
+        echo "XSIMD_TEST_CPU_ASSUME_SVE=0" >> "$GITHUB_ENV"
+        echo "XSIMD_TEST_CPU_ASSUME_RVV=0" >> "$GITHUB_ENV"
+        echo "XSIMD_TEST_CPU_ASSUME_LSX=1" >> "$GITHUB_ENV"
+        echo "XSIMD_TEST_CPU_ASSUME_LASX=${{ matrix.simd.lasx }}" >> "$GITHUB_ENV"
+        echo "XSIMD_TEST_CPU_ASSUME_VSX=0" >> "$GITHUB_ENV"
+        echo "XSIMD_TEST_CPU_ASSUME_VXE=0" >> "$GITHUB_ENV"
+        echo "XSIMD_TEST_CPU_ASSUME_MANUFACTURER=unknown" >> "$GITHUB_ENV"
+    - name: Testing xsimd
+      timeout-minutes: 15
+      run: ${{ steps.setup-compiler.outputs.qemu }} -cpu '${{ matrix.simd.cpu }}' ./test/test_xsimd
+      working-directory: ${{ github.workspace }}/_build

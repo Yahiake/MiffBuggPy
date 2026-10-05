@@ -1,0 +1,488 @@
+/***************************************************************************
+ * Copyright (c) Johan Mabille, Sylvain Corlay, Wolf Vollprecht and         *
+ * Martin Renou                                                             *
+ * Copyright (c) QuantStack                                                 *
+ * Copyright (c) Serge Guelton                                              *
+ *                                                                          *
+ * Distributed under the terms of the BSD 3-Clause License.                 *
+ *                                                                          *
+ * The full license is in the file LICENSE, distributed with this software. *
+ ****************************************************************************/
+
+#include "xsimd/xsimd.hpp"
+
+#include <numeric>
+#ifndef XSIMD_NO_SUPPORTED_ARCHITECTURE
+
+#include "test_utils.hpp"
+
+template <class B>
+struct constant_batch_test
+{
+    using batch_type = B;
+    using value_type = typename B::value_type;
+    using arch_type = typename B::arch_type;
+    static constexpr size_t size = B::size;
+    using array_type = std::array<value_type, size>;
+    using bool_array_type = std::array<bool, size>;
+    using batch_bool_type = typename batch_type::batch_bool_type;
+
+    struct generator
+    {
+        static constexpr value_type get(size_t index, size_t /*size*/)
+        {
+            return index % 2 ? 0 : 1;
+        }
+    };
+
+    void test_init_from_constant() const
+    {
+        array_type expected;
+        std::generate(expected.begin(), expected.end(), []()
+                      { return 1; });
+        constexpr auto b = xsimd::make_batch_constant<value_type, 1, arch_type>();
+        INFO("batch(value_type)");
+        CHECK_BATCH_EQ((batch_type)b, expected);
+    }
+
+    void test_init_from_array() const
+    {
+#if XSIMD_CPP_VERSION >= 202002L
+        constexpr array_type expected = []()
+        {
+            array_type out = {};
+            std::iota(out.begin(), out.end(), 0);
+            return out;
+        }();
+
+        constexpr auto b = xsimd::make_batch_constant<expected, arch_type>();
+        INFO("batch(value_type)");
+        CHECK_BATCH_EQ((batch_type)b, expected);
+#endif
+    }
+
+    void test_init_from_generator() const
+    {
+        array_type expected;
+        size_t i = 0;
+        std::generate(expected.begin(), expected.end(),
+                      [&i]()
+                      { return generator::get(i++, size); });
+        constexpr auto b = xsimd::make_batch_constant<value_type, generator, arch_type>();
+        INFO("batch(value_type)");
+        CHECK_BATCH_EQ((batch_type)b, expected);
+    }
+
+    void test_cast() const
+    {
+        constexpr auto cst_b = xsimd::make_batch_constant<value_type, generator, arch_type>();
+        auto b0 = cst_b.as_batch();
+        auto b1 = (batch_type)cst_b;
+        CHECK_BATCH_EQ(b0, b1);
+        // The actual values are already tested in test_init_from_generator
+    }
+
+    struct arange
+    {
+        static constexpr value_type get(size_t index, size_t /*size*/)
+        {
+            return static_cast<value_type>(index);
+        }
+    };
+
+    void test_init_from_generator_arange() const
+    {
+        array_type expected;
+        size_t i = 0;
+        std::generate(expected.begin(), expected.end(),
+                      [&i]()
+                      { return arange::get(i++, size); });
+        constexpr auto b = xsimd::make_batch_constant<value_type, arange, arch_type>();
+        INFO("batch(value_type)");
+        CHECK_BATCH_EQ((batch_type)b, expected);
+
+        constexpr auto b_p = xsimd::make_iota_batch_constant<value_type, arch_type>();
+        INFO("batch(value_type)");
+        CHECK_BATCH_EQ((batch_type)b_p, expected);
+    }
+
+    template <value_type V>
+    struct constant
+    {
+        static constexpr value_type get(size_t /*index*/, size_t /*size*/)
+        {
+            return V;
+        }
+    };
+
+    void test_init_from_constant_generator() const
+    {
+        array_type expected;
+        std::fill(expected.begin(), expected.end(), constant<3>::get(0, 0));
+        constexpr auto b = xsimd::make_batch_constant<value_type, constant<3>, arch_type>();
+        INFO("batch(value_type)");
+        CHECK_BATCH_EQ((batch_type)b, expected);
+    }
+
+    void test_ops() const
+    {
+        constexpr auto n12 = xsimd::make_batch_constant<value_type, constant<12>, arch_type>();
+        constexpr auto n3 = xsimd::make_batch_constant<value_type, constant<3>, arch_type>();
+        constexpr std::integral_constant<value_type, 3> c3;
+
+        constexpr auto n12_add_n3 = n12 + n3;
+        constexpr auto n15 = xsimd::make_batch_constant<value_type, constant<15>, arch_type>();
+        static_assert(std::is_same_v<decltype(n12_add_n3), decltype(n15)>, "n12 + n3 == n15");
+        constexpr auto n12_add_c3 = n12 + c3;
+        static_assert(std::is_same_v<decltype(n12_add_c3), decltype(n15)>, "n12 + c3 == n15");
+
+        constexpr auto n12_sub_n3 = n12 - n3;
+        constexpr auto n9 = xsimd::make_batch_constant<value_type, constant<9>, arch_type>();
+        static_assert(std::is_same_v<decltype(n12_sub_n3), decltype(n9)>, "n12 - n3 == n9");
+        constexpr auto n12_sub_c3 = n12 - c3;
+        static_assert(std::is_same_v<decltype(n12_sub_c3), decltype(n9)>, "n12 - c3 == n9");
+
+        constexpr auto n12_mul_n3 = n12 * n3;
+        constexpr auto n36 = xsimd::make_batch_constant<value_type, constant<36>, arch_type>();
+        static_assert(std::is_same_v<decltype(n12_mul_n3), decltype(n36)>, "n12 * n3 == n36");
+        constexpr auto n12_mul_c3 = n12 * c3;
+        static_assert(std::is_same_v<decltype(n12_mul_c3), decltype(n36)>, "n12 - c3 == n36");
+
+        constexpr auto n12_div_n3 = n12 / n3;
+        constexpr auto n4 = xsimd::make_batch_constant<value_type, constant<4>, arch_type>();
+        static_assert(std::is_same_v<decltype(n12_div_n3), decltype(n4)>, "n12 / n3 == n4");
+        constexpr auto n12_div_c3 = n12 / c3;
+        static_assert(std::is_same_v<decltype(n12_div_c3), decltype(n4)>, "n12 / c3 == n4");
+
+        constexpr auto n12_mod_n3 = n12 % n3;
+        constexpr auto n0 = xsimd::make_batch_constant<value_type, constant<0>, arch_type>();
+        static_assert(std::is_same_v<decltype(n12_mod_n3), decltype(n0)>, "n12 % n3 == n0");
+        constexpr auto n12_mod_c3 = n12 % c3;
+        static_assert(std::is_same_v<decltype(n12_mod_c3), decltype(n0)>, "n12 % c3 == n0");
+
+        constexpr auto n12_land_n3 = n12 & n3;
+        static_assert(std::is_same_v<decltype(n12_land_n3), decltype(n0)>, "n12 & n3 == n0");
+        constexpr auto n12_land_c3 = n12 & c3;
+        static_assert(std::is_same_v<decltype(n12_land_c3), decltype(n0)>, "n12 & c3 == n0");
+
+        constexpr auto n12_lor_n3 = n12 | n3;
+        static_assert(std::is_same_v<decltype(n12_lor_n3), decltype(n15)>, "n12 | n3 == n15");
+        constexpr auto n12_lor_c3 = n12 | c3;
+        static_assert(std::is_same_v<decltype(n12_lor_c3), decltype(n15)>, "n12 | c3 == n15");
+
+        constexpr auto n12_lxor_n3 = n12 ^ n3;
+        static_assert(std::is_same_v<decltype(n12_lxor_n3), decltype(n15)>, "n12 ^ n3 == n15");
+        constexpr auto n12_lxor_c3 = n12 ^ c3;
+        static_assert(std::is_same_v<decltype(n12_lxor_c3), decltype(n15)>, "n12 ^ c3 == n15");
+
+        constexpr auto n96 = xsimd::make_batch_constant<value_type, constant<96>, arch_type>();
+        constexpr auto n12_lshift_n3 = n12 << n3;
+        static_assert(std::is_same_v<decltype(n12_lshift_n3), decltype(n96)>, "n12 << n3 == n96");
+        constexpr auto n12_lshift_c3 = n12 << c3;
+        static_assert(std::is_same_v<decltype(n12_lshift_c3), decltype(n96)>, "n12 << c3 == n96");
+
+        constexpr auto n1 = xsimd::make_batch_constant<value_type, constant<1>, arch_type>();
+        constexpr auto n12_rshift_n3 = n12 >> n3;
+        static_assert(std::is_same_v<decltype(n12_rshift_n3), decltype(n1)>, "n12 >> n3 == n1");
+        constexpr auto n12_rshift_c3 = n12 >> c3;
+        static_assert(std::is_same_v<decltype(n12_rshift_c3), decltype(n1)>, "n12 >> c3 == n1");
+
+        constexpr auto n12_uadd = +n12;
+        static_assert(std::is_same_v<decltype(n12_uadd), decltype(n12)>, "+n12 == n12");
+
+        constexpr auto n12_inv = ~n12;
+        constexpr auto n12_inv_ = xsimd::make_batch_constant<value_type, constant<(value_type)~12>, arch_type>();
+        static_assert(std::is_same_v<decltype(n12_inv), decltype(n12_inv_)>, "~n12 == n12_inv");
+
+        constexpr auto n12_usub = -n12;
+        constexpr auto n12_usub_ = xsimd::make_batch_constant<value_type, constant<(value_type)-12>, arch_type>();
+        static_assert(std::is_same_v<decltype(n12_usub), decltype(n12_usub_)>, "-n12 == n12_usub");
+
+        // comparison operators
+        using true_batch_type = decltype(xsimd::make_batch_bool_constant<value_type, true, arch_type>());
+        using false_batch_type = decltype(xsimd::make_batch_bool_constant<value_type, false, arch_type>());
+
+        static_assert(std::is_same_v<typename decltype(n12 == n12)::operand_type, typename decltype(n12)::value_type>, "same type");
+
+        static_assert(std::is_same_v<decltype(n12 == n12), true_batch_type>, "n12 == n12");
+        static_assert(std::is_same_v<decltype(n12 == n3), false_batch_type>, "n12 == n3");
+        static_assert(std::is_same_v<decltype(n12 == c3), false_batch_type>, "n12 == c3");
+
+        static_assert(std::is_same_v<decltype(n12 != n12), false_batch_type>, "n12 != n12");
+        static_assert(std::is_same_v<decltype(n12 != n3), true_batch_type>, "n12 != n3");
+        static_assert(std::is_same_v<decltype(n12 != c3), true_batch_type>, "n12 != c3");
+
+        static_assert(std::is_same_v<decltype(n12 < n12), false_batch_type>, "n12 < n12");
+        static_assert(std::is_same_v<decltype(n12 < n3), false_batch_type>, "n12 < n3");
+        static_assert(std::is_same_v<decltype(n12 < c3), false_batch_type>, "n12 < c3");
+
+        static_assert(std::is_same_v<decltype(n12 > n12), false_batch_type>, "n12 > n12");
+        static_assert(std::is_same_v<decltype(n12 > n3), true_batch_type>, "n12 > n3");
+        static_assert(std::is_same_v<decltype(n12 > c3), true_batch_type>, "n12 > c3");
+
+        static_assert(std::is_same_v<decltype(n12 <= n12), true_batch_type>, "n12 <= n12");
+        static_assert(std::is_same_v<decltype(n12 <= n3), false_batch_type>, "n12 <= n3");
+        static_assert(std::is_same_v<decltype(n12 <= c3), false_batch_type>, "n12 <= c3");
+
+        static_assert(std::is_same_v<decltype(n12 >= n12), true_batch_type>, "n12 >= n12");
+        static_assert(std::is_same_v<decltype(n12 >= n3), true_batch_type>, "n12 >= n3");
+        static_assert(std::is_same_v<decltype(n12 >= c3), true_batch_type>, "n12 >= c3");
+    }
+};
+
+TEST_CASE_TEMPLATE("[constant batch]", B, BATCH_INT_TYPES)
+{
+    constant_batch_test<B> Test;
+    SUBCASE("init_from_constant") { Test.test_init_from_constant(); }
+
+    SUBCASE("test_init_from_array") { Test.test_init_from_array(); }
+
+    SUBCASE("init_from_generator") { Test.test_init_from_generator(); }
+
+    SUBCASE("as_batch") { Test.test_cast(); }
+
+    SUBCASE("init_from_generator_arange")
+    {
+        Test.test_init_from_generator_arange();
+    }
+
+    SUBCASE("init_from_constant_generator") { Test.test_init_from_constant_generator(); }
+
+    SUBCASE("operators")
+    {
+        Test.test_ops();
+    }
+}
+
+template <class B>
+struct constant_bool_batch_test
+{
+    using batch_type = B;
+    using value_type = typename B::value_type;
+    using arch_type = typename B::arch_type;
+    static constexpr size_t size = B::size;
+    using array_type = std::array<value_type, size>;
+    using bool_array_type = std::array<bool, size>;
+    using batch_bool_type = typename batch_type::batch_bool_type;
+
+    struct generator
+    {
+        static constexpr bool get(size_t index, size_t /*size*/)
+        {
+            return index % 2;
+        }
+    };
+
+    void test_init_from_constant() const
+    {
+        bool_array_type expected;
+        std::generate(expected.begin(), expected.end(), []()
+                      { return false; });
+        constexpr auto b = xsimd::make_batch_bool_constant<value_type, false, arch_type>();
+        INFO("batch_bool_constant(value_type)");
+        CHECK_BATCH_EQ((batch_bool_type)b, expected);
+    }
+
+    void test_init_from_array() const
+    {
+#if XSIMD_CPP_VERSION >= 202002L
+        constexpr bool_array_type expected = []()
+        {
+            bool_array_type out = {};
+            for (std::size_t k = 0; k < out.size(); ++k)
+            {
+                out[k] = k % 2 == 0;
+            }
+            return out;
+        }();
+
+        constexpr auto b = xsimd::make_batch_bool_constant<value_type, expected, arch_type>();
+        INFO("batch_bool_constant(value_type)");
+        CHECK_BATCH_EQ((batch_bool_type)b, expected);
+#endif
+    }
+
+    void test_init_from_generator() const
+    {
+        bool_array_type expected;
+        size_t i = 0;
+        std::generate(expected.begin(), expected.end(),
+                      [&i]()
+                      { return generator::get(i++, size); });
+        constexpr auto b = xsimd::make_batch_bool_constant<value_type, generator, arch_type>();
+        INFO("batch_bool_constant(value_type)");
+        CHECK_BATCH_EQ((batch_bool_type)b, expected);
+    }
+
+    struct split
+    {
+        static constexpr bool get(size_t index, size_t size)
+        {
+            return index < size / 2;
+        }
+    };
+
+    void test_init_from_generator_split() const
+    {
+        bool_array_type expected;
+        size_t i = 0;
+        std::generate(expected.begin(), expected.end(),
+                      [&i]()
+                      { return split::get(i++, size); });
+        constexpr auto b = xsimd::make_batch_bool_constant<value_type, split, arch_type>();
+        INFO("batch_bool_constant(value_type)");
+        CHECK_BATCH_EQ((batch_bool_type)b, expected);
+    }
+
+    struct inv_split
+    {
+        static constexpr bool get(size_t index, size_t size)
+        {
+            return !split().get(index, size);
+        }
+    };
+
+    template <bool Val>
+    struct constant
+    {
+        static constexpr bool get(size_t /*index*/, size_t /*size*/)
+        {
+            return Val;
+        }
+    };
+
+    void test_cast() const
+    {
+        constexpr auto all_true = xsimd::make_batch_bool_constant<value_type, constant<true>, arch_type>();
+        auto b0 = all_true.as_batch_bool();
+        auto b1 = (batch_bool_type)all_true;
+        CHECK_BATCH_EQ(b0, batch_bool_type(true));
+        CHECK_BATCH_EQ(b1, batch_bool_type(true));
+    }
+
+    void test_ops() const
+    {
+        constexpr auto all_true = xsimd::make_batch_bool_constant<value_type, constant<true>, arch_type>();
+        constexpr auto all_false = xsimd::make_batch_bool_constant<value_type, constant<false>, arch_type>();
+
+        constexpr auto x = xsimd::make_batch_bool_constant<value_type, split, arch_type>();
+        constexpr auto y = xsimd::make_batch_bool_constant<value_type, inv_split, arch_type>();
+
+        constexpr auto x_or_y = x | y;
+        static_assert(std::is_same_v<decltype(x_or_y), decltype(all_true)>, "x | y == true");
+
+        constexpr auto x_lor_y = x || y;
+        static_assert(std::is_same_v<decltype(x_lor_y), decltype(all_true)>, "x || y == true");
+
+        constexpr auto x_and_y = x & y;
+        static_assert(std::is_same_v<decltype(x_and_y), decltype(all_false)>, "x & y == false");
+
+        constexpr auto x_land_y = x && y;
+        static_assert(std::is_same_v<decltype(x_land_y), decltype(all_false)>, "x && y == false");
+
+        constexpr auto x_xor_y = x ^ y;
+        static_assert(std::is_same_v<decltype(x_xor_y), decltype(all_true)>, "x ^ y == true");
+
+        constexpr auto not_x = !x;
+        static_assert(std::is_same_v<decltype(not_x), decltype(y)>, "!x == y");
+
+        constexpr auto inv_x = ~x;
+        static_assert(std::is_same_v<decltype(inv_x), decltype(y)>, "~x == y");
+    }
+
+    struct first_half
+    {
+        static constexpr bool get(size_t index, size_t size) { return index < size / 2; }
+    };
+    struct second_half
+    {
+        static constexpr bool get(size_t index, size_t size) { return index >= size / 2; }
+    };
+    struct ends
+    {
+        static constexpr bool get(size_t index, size_t size) { return index == 0 || index + 1 == size; }
+    };
+    struct all_but_last
+    {
+        static constexpr bool get(size_t index, size_t size) { return index + 1 < size; }
+    };
+    struct all_but_first
+    {
+        static constexpr bool get(size_t index, size_t) { return index != 0; }
+    };
+    struct first_only
+    {
+        static constexpr bool get(size_t index, size_t) { return index == 0; }
+    };
+    struct last_only
+    {
+        static constexpr bool get(size_t index, size_t size) { return index + 1 == size; }
+    };
+
+    void test_shape() const
+    {
+        constexpr auto all_true = xsimd::make_batch_bool_constant<value_type, constant<true>, arch_type>();
+        constexpr auto all_false = xsimd::make_batch_bool_constant<value_type, constant<false>, arch_type>();
+        constexpr auto lo = xsimd::make_batch_bool_constant<value_type, first_half, arch_type>();
+        constexpr auto hi = xsimd::make_batch_bool_constant<value_type, second_half, arch_type>();
+        constexpr auto edges = xsimd::make_batch_bool_constant<value_type, ends, arch_type>();
+        constexpr auto size = decltype(all_true)::size;
+
+        static_assert(all_true.is_prefix() && all_true.is_suffix(), "full mask is prefix and suffix");
+        static_assert(all_false.is_prefix() && all_false.is_suffix(), "empty mask is prefix and suffix");
+        static_assert(lo.is_prefix() && !lo.is_suffix(), "first half is a prefix only");
+        static_assert(hi.is_suffix() && !hi.is_prefix(), "second half is a suffix only");
+        // {first, last} lanes: contiguous only when that covers the whole batch
+        static_assert(edges.is_prefix() == (size <= 2), "non-contiguous mask is not a prefix");
+        static_assert(edges.is_suffix() == (size <= 2), "non-contiguous mask is not a suffix");
+
+        // prefix()/suffix() return the set-run length, or size+1 when not that shape
+        static_assert(lo.prefix() == size / 2 && lo.suffix() == size + 1, "lo is the size/2 prefix, no suffix");
+        static_assert(hi.suffix() == size / 2 && hi.prefix() == size + 1, "hi is the size/2 suffix, no prefix");
+        static_assert(all_true.prefix() == size && all_true.suffix() == size, "full mask runs the whole width");
+        static_assert(all_false.prefix() == 0 && all_false.suffix() == 0, "empty mask has zero-length runs");
+        static_assert(edges.prefix() == (size <= 2 ? size : size + 1), "non-contiguous mask has no prefix length");
+
+        // off-by-one boundary: the length adjacent to the sentinel (size-1) must
+        // count exactly, and the sentinel must be exactly size+1 (never size, size+2)
+        constexpr auto pre1 = xsimd::make_batch_bool_constant<value_type, all_but_last, arch_type>();
+        constexpr auto suf1 = xsimd::make_batch_bool_constant<value_type, all_but_first, arch_type>();
+        constexpr auto f1 = xsimd::make_batch_bool_constant<value_type, first_only, arch_type>();
+        constexpr auto l1 = xsimd::make_batch_bool_constant<value_type, last_only, arch_type>();
+        static_assert(size < 2 || pre1.prefix() == size - 1, "size-1 prefix counts exactly");
+        static_assert(size < 2 || pre1.suffix() == size + 1, "a size-1 prefix is not a suffix");
+        static_assert(size < 2 || suf1.suffix() == size - 1, "size-1 suffix counts exactly");
+        static_assert(size < 2 || suf1.prefix() == size + 1, "a size-1 suffix is not a prefix");
+        static_assert(size < 2 || (pre1.suffix() != size && pre1.suffix() != size + 2), "sentinel is exactly size+1");
+        static_assert(f1.prefix() == 1, "single first lane is the 1-prefix");
+        static_assert(size < 2 || f1.suffix() == size + 1, "single first lane is not a suffix");
+        static_assert(l1.suffix() == 1, "single last lane is the 1-suffix");
+        static_assert(size < 2 || l1.prefix() == size + 1, "single last lane is not a prefix");
+    }
+};
+
+TEST_CASE_TEMPLATE("[constant bool batch]", B, BATCH_INT_TYPES)
+{
+    constant_bool_batch_test<B> Test;
+    SUBCASE("init_from_constant") { Test.test_init_from_constant(); }
+
+    SUBCASE("test_init_from_array") { Test.test_init_from_array(); }
+
+    SUBCASE("init_from_generator") { Test.test_init_from_generator(); }
+
+    SUBCASE("as_batch") { Test.test_cast(); }
+
+    SUBCASE("init_from_generator_split")
+    {
+        Test.test_init_from_generator_split();
+    }
+    SUBCASE("operators")
+    {
+        Test.test_ops();
+    }
+    SUBCASE("shape")
+    {
+        Test.test_shape();
+    }
+}
+#endif

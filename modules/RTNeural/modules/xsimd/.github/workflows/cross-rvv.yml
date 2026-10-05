@@ -1,0 +1,72 @@
+# RISC-V RVV cross-compilation build (Ubuntu apt qemu, multi-compiler matrix).
+#
+# References:
+#   QEMU 11.0.0 release notes:  https://www.qemu.org/2026/04/22/qemu-11-0-0/
+#   QEMU RVV slowdowns issue:   https://gitlab.com/qemu-project/qemu/-/issues/2137
+#   Ubuntu RVV vstart bug:      https://bugs.launchpad.net/ubuntu/+source/qemu/+bug/2095169
+name: RISC-V RVV cross-compilation build
+on: [push, pull_request]
+concurrency:
+  group: ${{ github.workflow }}-${{ github.job }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    name: 'RISC-V RVV${{ matrix.vector_bits }}'
+    strategy:
+      fail-fast: false
+      matrix:
+        sys:
+          - { compiler: 'gcc', gcc_runtime: '14'}
+          - { compiler: 'clang', version: '17', gcc_runtime: '14'}
+          - { compiler: 'clang', version: '18', gcc_runtime: '14'}
+        vector_bits:
+          - 128
+          - 256
+          - 512
+        exclude:
+          # Fails with a timeout, altough it works with clang. Also used to work
+          # with a more recent version of qemu, but now it's back to failing.
+          # See 8b8168722d1ab425186efd2cddb1e29aba8b9c02 for more details.
+          - sys: { compiler: 'gcc', gcc_runtime: '14'}
+            vector_bits: 128
+    steps:
+    - name: Checkout xsimd
+      uses: actions/checkout@v6
+    - name: Setup compiler
+      id: setup-compiler
+      # Use the apt qemu shipped by the runner image rather than
+      # docker/setup-qemu-action: tonistiigi/binfmt pins an even older
+      # qemu (~6.x/7.x) whose RVV implementation miscompiles vmulh* and is
+      # known to hang test_xsimd until the 6h GHA timeout.
+      uses: ./.github/actions/setup-cross-compiler-apt
+      with:
+        compiler: ${{ matrix.sys.compiler }}
+        version: ${{ matrix.sys.version || matrix.sys.gcc_runtime }}
+        target: riscv64-linux-gnu
+        gcc-runtime: ${{ matrix.sys.gcc_runtime }}
+        qemu: 'true'
+    - name: Setup Ninja
+      run: |
+        sudo apt-get -y -qq install ninja-build
+    - name: Setup
+      run: >
+        cmake -S . -B _build
+        -GNinja
+        -DBUILD_TESTS=ON
+        -DDOWNLOAD_DOCTEST=ON
+        -DCMAKE_BUILD_TYPE=Release
+        -DTARGET_ARCH=rvv_${{ matrix.vector_bits }}
+    - name: Build
+      run: cmake --build _build
+    - name: Set CPU feature test expectations
+      run: |
+        echo "XSIMD_TEST_CPU_ASSUME_SSE4_2=0" >> "$GITHUB_ENV"
+        echo "XSIMD_TEST_CPU_ASSUME_SVE=0"    >> "$GITHUB_ENV"
+        echo "XSIMD_TEST_CPU_ASSUME_RVV=1" >> "$GITHUB_ENV"
+    - name: Testing xsimd
+      timeout-minutes: 10
+      run: >
+        QEMU_CPU="rv64,zba=true,zbb=true,zbs=true,v=true,vlen=${{ matrix.vector_bits }},elen=64,vext_spec=v1.0"
+        ${{ steps.setup-compiler.outputs.qemu }} ./test/test_xsimd
+      working-directory: ${{ github.workspace }}/_build
