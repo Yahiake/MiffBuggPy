@@ -1,7 +1,7 @@
 # Build output
-build/
-build-*/
-dist/
+/build/
+/build-*/
+/dist/
 JuceLibraryCode/
 
 # Compiled artefacts
@@ -14,6 +14,7 @@ JuceLibraryCode/
 *.dll
 *.exe
 *.pyd
+*.zip
 
 # JUCE / IDE
 .vs/
