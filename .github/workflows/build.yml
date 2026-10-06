@@ -30,12 +30,6 @@ jobs:
             cmake_args: ''
             build_args: '--config Release'
             is_windows: true
-          - name: macOS
-            os: macos-latest
-            artifact_name: MiffBuggPy-macOS-Universal
-            cmake_args: '-DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"'
-            build_args: '--config Release'
-            is_macos: true
           - name: Linux
             os: ubuntu-latest
             artifact_name: MiffBuggPy-Linux-x64
@@ -84,17 +78,6 @@ jobs:
           mkdir -p staging
           cp -r dist/* staging/
           cd staging && 7z a ../${{ matrix.artifact_name }}.zip *
-
-      - name: Stage Artifacts (macOS)
-        if: matrix.is_macos
-        shell: bash
-        run: |
-          mkdir -p staging
-          cp -r build/MiffBuggPy_artefacts/Release/VST3/MiffBuggPy.vst3 staging/ || true
-          cp -r build/MiffBuggPy_artefacts/Release/AU/MiffBuggPy.component staging/ || true
-          cp -r build/MiffBuggPy_artefacts/Release/Standalone/MiffBuggPy.app staging/ || true
-          cp packaging/README.txt staging/ || true
-          cd staging && zip -r -y ../${{ matrix.artifact_name }}.zip *
 
       - name: Stage Artifacts (Linux)
         if: matrix.is_linux
