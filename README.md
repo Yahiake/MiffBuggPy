@@ -6,7 +6,7 @@
 [![PyTorch](https://img.shields.io/badge/Training-PyTorch-red.svg)](https://pytorch.org/)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
-**MiffBuggPy** is a real-time, zero-latency neural network emulation of the legendary **Electro-Harmonix Big Muff Pi** fuzz pedal, packaged as a VST3/AU audio plugin and standalone application for Windows, macOS, and Linux.
+**MiffBuggPy** is a real-time, zero-latency neural network emulation of the legendary **Electro-Harmonix Big Muff Pi** fuzz pedal, packaged as a VST3 audio plugin and standalone application for Windows, and Linux.
 
 Trained on high-precision **LiveSPICE** analog circuit simulations (oversampled 16x, 32 Newton-Raphson iterations) using a specialized recurrent neural network architecture, MiffBuggPy delivers **99.63% measured circuit accuracy** with less than **1% CPU usage** per instance.
 
@@ -34,16 +34,11 @@ Trained on high-precision **LiveSPICE** analog circuit simulations (oversampled 
 
 ## Installation
 
-Pre-built binaries for Windows, macOS, and Linux are automatically compiled on GitHub Releases:
+Pre-built binaries for Windows, and Linux are automatically compiled on GitHub Releases:
 
 ### Windows (x64)
 - **VST3**: Copy `MiffBuggPy.vst3` into `C:\Program Files\Common Files\VST3\`
 - **Standalone**: Double click `MiffBuggPy.exe` to run directly
-
-### macOS (Universal: Apple Silicon arm64 & Intel x86_64)
-- **Audio Unit (AU)**: Copy `MiffBuggPy.component` into `~/Library/Audio/Plug-Ins/Components/`
-- **VST3**: Copy `MiffBuggPy.vst3` into `~/Library/Audio/Plug-Ins/VST3/`
-- **Standalone**: Copy `MiffBuggPy.app` to `/Applications/`
 
 ### Linux (x86_64)
 - **VST3**: Copy `MiffBuggPy.vst3` into `~/.vst3/`
