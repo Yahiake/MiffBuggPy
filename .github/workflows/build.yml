@@ -61,8 +61,10 @@ jobs:
             libxinerama-dev \
             libxext-dev \
             libfreetype6-dev \
+            libfontconfig1-dev \
             libxcursor-dev \
             libxrandr-dev \
+            libxrender-dev \
             libxcomposite-dev
 
       - name: Configure CMake
