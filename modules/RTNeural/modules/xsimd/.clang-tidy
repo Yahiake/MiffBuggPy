@@ -1,4 +1,0 @@
----
-Checks:          '-*,modernize-type-traits'
-WarningsAsErrors: '*'
-HeaderFilterRegex: '.*'

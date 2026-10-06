@@ -86,8 +86,8 @@ miffbuggpy/
 ### Build Steps
 
 ```powershell
-# Clone the repository
-git clone https://github.com/Yahiake/MiffBuggPy.git
+# Clone the repository with submodules
+git clone --recurse-submodules https://github.com/Yahiake/MiffBuggPy.git
 cd MiffBuggPy
 
 # Configure CMake with Release config and AVX2 enabled
