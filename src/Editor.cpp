@@ -232,7 +232,7 @@ void PluginEditor::refreshStatus()
 
     status.setColour (juce::Label::textColourId, kTextDim);
     status.setText ("Network sees: " + orderText
-                      + juce::String ("\nVolume: output gain | Host: ") + rateText
+                      + juce::String ("\nVolume: output gain | Host: ") + rateText,
                     juce::dontSendNotification);
 }
 
