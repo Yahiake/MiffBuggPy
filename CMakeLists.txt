@@ -106,6 +106,7 @@ target_compile_definitions(MiffBuggPy PUBLIC
 target_sources(MiffBuggPy PRIVATE
     src/Plugin.cpp
     src/Editor.cpp
+    modules/r8brain-free-src/r8bbase.cpp
 )
 
 # The exported network is embedded so the built plugin is self-contained and does
@@ -128,6 +129,7 @@ target_link_libraries(MiffBuggPy PUBLIC
 # RTNeural target does not add to its interface include path.
 target_include_directories(MiffBuggPy PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/modules/RTNeural/RTNeural"
+    "${CMAKE_CURRENT_SOURCE_DIR}/modules/r8brain-free-src"
 )
 
 # Must come after target_link_libraries. The generated header includes exactly the
