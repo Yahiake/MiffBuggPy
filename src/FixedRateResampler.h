@@ -26,16 +26,14 @@ public:
     {
         hostRateStored = hostRate;
         maxModelBlock = (int) std::ceil ((double) kChunk * kModelRate / hostRate) + 64;
-
-        toModel = std::make_unique<r8b::CDSPResampler16> (hostRate, kModelRate, kChunk,
-                                                  4.0, r8b::fprMinPhase);
-        toHost  = std::make_unique<r8b::CDSPResampler16> (kModelRate, hostRate, maxModelBlock,
-                                                  4.0, r8b::fprMinPhase);
-
+    
+        toModel = std::make_unique<r8b::CDSPResampler16> (hostRate, kModelRate, kChunk, 4.0);
+        toHost  = std::make_unique<r8b::CDSPResampler16> (kModelRate, hostRate, maxModelBlock, 4.0);
+    
         hostBuf.assign ((size_t) kChunk, 0.0);
         modelBuf.assign ((size_t) maxModelBlock, 0.0);
         ring.assign ((size_t) kRingSize, 0.0f);
-
+    
         primeZeros = measureWorstCaseDeficit() + 16;
         reset();
     }
