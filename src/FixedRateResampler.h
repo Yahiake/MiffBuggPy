@@ -27,8 +27,10 @@ public:
         hostRateStored = hostRate;
         maxModelBlock = (int) std::ceil ((double) kChunk * kModelRate / hostRate) + 64;
 
-        toModel = std::make_unique<r8b::CDSPResampler24> (hostRate, kModelRate, kChunk);
-        toHost  = std::make_unique<r8b::CDSPResampler24> (kModelRate, hostRate, maxModelBlock);
+        toModel = std::make_unique<r8b::CDSPResampler16> (hostRate, kModelRate, kChunk,
+                                                  4.0, r8b::fprMinPhase);
+        toHost  = std::make_unique<r8b::CDSPResampler16> (kModelRate, hostRate, maxModelBlock,
+                                                  4.0, r8b::fprMinPhase);
 
         hostBuf.assign ((size_t) kChunk, 0.0);
         modelBuf.assign ((size_t) maxModelBlock, 0.0);
@@ -147,7 +149,7 @@ private:
         return (int) worst;
     }
 
-    std::unique_ptr<r8b::CDSPResampler24> toModel, toHost;
+    std::unique_ptr<r8b::CDSPResampler16> toModel, toHost;
     std::vector<double> hostBuf, modelBuf;
     std::vector<float> ring;
 
