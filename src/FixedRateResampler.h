@@ -1,5 +1,5 @@
 #pragma once
-
+#define NOMINMAX
 #include "CDSPResampler.h"
 
 #include <algorithm>
