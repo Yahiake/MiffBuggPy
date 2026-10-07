@@ -157,6 +157,16 @@ bool probeNetwork (Network& net, juce::String& errorOut)
     return true;
 }
 
+/** 4-point cubic Hermite / Catmull-Rom interpolation for transparent fractional resampling. */
+forcedinline float interpolateCatmullRom (float y0, float y1, float y2, float y3, float f) noexcept
+{
+    const float halfY0 = 0.5f * y0;
+    const float halfY3 = 0.5f * y3;
+    return y1 + f * ((0.5f * y2 - halfY0)
+           + (f * (((y0 + 2.0f * y2) - (halfY3 + 2.5f * y1))
+           + (f * ((halfY3 + 1.5f * y1) - (halfY0 + 1.5f * y2))))));
+}
+
 } // namespace
 
 // ===========================================================================
@@ -303,10 +313,57 @@ void PluginProcessor::parameterChanged (const juce::String& parameterID, float n
 
 void PluginProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
-    // One-pole smoothing, ~15 ms to converge. Long enough that automation does not
-    // zipper, short enough to feel immediate.
+    currentHostRate = sampleRate;
+    needsResampling = std::abs (sampleRate - 48000.0) > 1.0;
+    ratioIn = sampleRate / 48000.0;
+    ratioOut = 48000.0 / sampleRate;
+
+    // Knob smoothing time constant (~15 ms) evaluated at the model's native 48 kHz clock
     const auto tauSeconds = 0.015;
-    smoothingCoeff = static_cast<float> (1.0 - std::exp (-1.0 / (tauSeconds * sampleRate)));
+    smoothingCoeff = static_cast<float> (1.0 - std::exp (-1.0 / (tauSeconds * 48000.0)));
+
+    for (int i = 0; i < kNumParams; ++i)
+        smoothedParams[(size_t) i] = targets[(size_t) i].load();
+
+    // Transparent DC Blocker: 15 Hz highpass removes any sub-audible DC drift from neural tanh
+    juce::dsp::ProcessSpec spec;
+    spec.sampleRate = sampleRate;
+    spec.maximumBlockSize = static_cast<juce::uint32> (samplesPerBlock);
+    spec.numChannels = 1;
+
+    dcBlocker.prepare (spec);
+    dcBlocker.setType (juce::dsp::FirstOrderTPTFilterType::highpass);
+    dcBlocker.setCutoffFrequency (15.0f);
+    dcBlocker.reset();
+
+    // Anti-aliasing and anti-imaging filters when host rate exceeds 48 kHz
+    if (sampleRate > 48000.0)
+    {
+        antiAliasFilter.coefficients = juce::dsp::IIR::Coefficients<float>::makeLowPass (sampleRate, 20000.0);
+        antiAliasFilter.reset();
+        antiImageFilter.coefficients = juce::dsp::IIR::Coefficients<float>::makeLowPass (sampleRate, 20000.0);
+        antiImageFilter.reset();
+    }
+
+    inFifo.fill (0.0f);
+    outFifo.fill (0.0f);
+    inFifoWritePos = 2;
+    inFifoReadPos = 0.0;
+    outFifoWritePos = 2;
+    outFifoReadPos = 0.0;
+
+    monoScratch.resize (static_cast<size_t> (juce::jmax (samplesPerBlock * 2, 2048)));
+
+    if (needsResampling)
+    {
+        // 2 samples lookahead on input + 2 samples lookahead on output (scaled to host samples)
+        const int latencySamples = 2 + juce::roundToInt (2.0 * ratioIn);
+        setLatencySamples (latencySamples);
+    }
+    else
+    {
+        setLatencySamples (0);
+    }
 
     model.reset();
 }
@@ -342,10 +399,11 @@ double PluginProcessor::getTailLengthSeconds() const
 // Processing
 //
 // RTNeural's ModelT is a per-sample interface here: forward(const float*) takes one
-// kInputSize vector and returns one output sample. Knob smoothing is therefore free
-// to run per sample rather than per block, because the feature vector is being
-// rebuilt one sample at a time regardless. That stops an automation ramp from
-// stepping once every 512 samples.
+// kInputSize vector and returns one output sample.
+// The network is trained at 48000 Hz. If the host operates at 48000 Hz, audio flows
+// directly with zero resampling and zero latency. At any other sample rate,
+// transparent Catmull-Rom resampling runs around the network to ensure learned time
+// constants and tone stack filters match the physical circuit exactly.
 // ===========================================================================
 
 void PluginProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
@@ -354,7 +412,7 @@ void PluginProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     const auto numSamples = buffer.getNumSamples();
     const auto numChannels = buffer.getNumChannels();
 
-    if (numChannels == 0)
+    if (numChannels == 0 || numSamples == 0)
         return;
 
     if (! modelValid)
@@ -367,32 +425,112 @@ void PluginProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
 
     const auto* input = buffer.getReadPointer (0);
 
+    if (monoScratch.size() < static_cast<size_t> (numSamples))
+        monoScratch.resize (static_cast<size_t> (numSamples));
+
+    // Lambda to step 1 neural inference sample at native 48 kHz
     std::array<float, kInputSize> frame {};
-    std::array<float, kNumParams> s {};
-
-    for (int i = 0; i < kNumParams; ++i)
-        s[(size_t) i] = targets[(size_t) i].load();
-
-    for (int n = 0; n < numSamples; ++n)
+    auto stepModel48k = [this, &frame] (float x) noexcept -> float
     {
-        frame[0] = input != nullptr ? input[n] : 0.0f;
+        frame[0] = x;
 
         for (int i = 0; i < kNumParams; ++i)
         {
-            s[(size_t) i] += smoothingCoeff * (targets[(size_t) i].load() - s[(size_t) i]);
+            smoothedParams[(size_t) i] += smoothingCoeff * (targets[(size_t) i].load() - smoothedParams[(size_t) i]);
 
             // Slot -1 is Volume: smoothed like the others so the gain does not step, but
             // never written into the feature vector.
             if (kFeatureSlot[(size_t) i] >= 0)
-                frame[(size_t) kFeatureSlot[(size_t) i]] = s[(size_t) i];
+                frame[(size_t) kFeatureSlot[(size_t) i]] = smoothedParams[(size_t) i];
         }
 
         // The network carries its own hidden state across the block boundary, which
         // is what makes continuous playback correct rather than block-by-block.
-        const auto y = model.forward (frame.data()) * volumeGainFor (s[(size_t) kVolume]);
+        return model.forward (frame.data()) * volumeGainFor (smoothedParams[(size_t) kVolume]);
+    };
+
+    if (! needsResampling)
+    {
+        // Direct 48 kHz path (zero latency, zero resampling)
+        for (int n = 0; n < numSamples; ++n)
+        {
+            const float inSamp = input != nullptr ? input[n] : 0.0f;
+            float outSamp = stepModel48k (inSamp);
+            outSamp = dcBlocker.processSample (0, outSamp);
+
+            for (int ch = 0; ch < numChannels; ++ch)
+                buffer.setSample (ch, n, outSamp);
+        }
+        return;
+    }
+
+    // Resampled path (transparently locks model execution to 48 kHz)
+    // 1. Prepare input: optional anti-aliasing if host rate > 48 kHz, then push to inFifo
+    for (int n = 0; n < numSamples; ++n)
+    {
+        float inSamp = input != nullptr ? input[n] : 0.0f;
+        if (currentHostRate > 48000.0)
+            inSamp = antiAliasFilter.processSample (inSamp);
+
+        inFifo[(size_t) (inFifoWritePos & kResampleBufferMask)] = inSamp;
+        ++inFifoWritePos;
+    }
+
+    // 2. Generate required 48 kHz samples to cover this host block
+    const double endOutPos = outFifoReadPos + (double) (numSamples - 1) * ratioOut;
+    const int neededOutIndex = static_cast<int> (std::floor (endOutPos)) + 2;
+
+    while (outFifoWritePos <= neededOutIndex)
+    {
+        const int inIdx = static_cast<int> (std::floor (inFifoReadPos));
+        const float fIn = static_cast<float> (inFifoReadPos - (double) inIdx);
+
+        const float y0 = inFifo[(size_t) ((inIdx - 1) & kResampleBufferMask)];
+        const float y1 = inFifo[(size_t) (inIdx & kResampleBufferMask)];
+        const float y2 = inFifo[(size_t) ((inIdx + 1) & kResampleBufferMask)];
+        const float y3 = inFifo[(size_t) ((inIdx + 2) & kResampleBufferMask)];
+
+        const float x48k = interpolateCatmullRom (y0, y1, y2, y3, fIn);
+        inFifoReadPos += ratioIn;
+
+        const float y48k = stepModel48k (x48k);
+        outFifo[(size_t) (outFifoWritePos & kResampleBufferMask)] = y48k;
+        ++outFifoWritePos;
+    }
+
+    // 3. Reconstruct output at host rate
+    for (int n = 0; n < numSamples; ++n)
+    {
+        const int outIdx = static_cast<int> (std::floor (outFifoReadPos));
+        const float fOut = static_cast<float> (outFifoReadPos - (double) outIdx);
+
+        const float y0 = outFifo[(size_t) ((outIdx - 1) & kResampleBufferMask)];
+        const float y1 = outFifo[(size_t) (outIdx & kResampleBufferMask)];
+        const float y2 = outFifo[(size_t) ((outIdx + 1) & kResampleBufferMask)];
+        const float y3 = outFifo[(size_t) ((outIdx + 2) & kResampleBufferMask)];
+
+        float outSamp = interpolateCatmullRom (y0, y1, y2, y3, fOut);
+        outFifoReadPos += ratioOut;
+
+        if (currentHostRate > 48000.0)
+            outSamp = antiImageFilter.processSample (outSamp);
+
+        outSamp = dcBlocker.processSample (0, outSamp);
 
         for (int ch = 0; ch < numChannels; ++ch)
-            buffer.setSample (ch, n, y);
+            buffer.setSample (ch, n, outSamp);
+    }
+
+    // Periodic position wrap to avoid any integer/floating overflow
+    if (inFifoReadPos >= (double) kResampleBufferSize)
+    {
+        inFifoReadPos -= (double) kResampleBufferSize;
+        inFifoWritePos -= kResampleBufferSize;
+    }
+    if (outFifoReadPos >= (double) kResampleBufferSize)
+    {
+        outFifoReadPos -= (double) kResampleBufferSize;
+        outFifoWritePos -= kResampleBufferSize;
     }
 }
 

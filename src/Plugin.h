@@ -1,11 +1,13 @@
 #pragma once
 
 #include <juce_audio_processors/juce_audio_processors.h>
+#include <juce_dsp/juce_dsp.h>
 
 #include <RTNeural.h>
 
 #include <array>
 #include <atomic>
+#include <vector>
 
 namespace Miffbuggpy
 {
@@ -87,14 +89,10 @@ enum KnobParam
 // Which feature slot each UI knob is written into. -1 means the knob does not reach the
 // network at all.
 //
-// The exported model's metadata declares its conditioning order, and the training code
-// wrote its column order to match. Feeding the knobs in the UI order instead would
-// silently produce a model whose knobs are cross-wired, which is exactly the kind of bug
-// that survives a clean ESR number because the network still fits the training data well.
-//
 //   feature slot 0 = audio
 //   feature slot 1 = Sustain
 //   feature slot 2 = Tone
+//   Volume (-1)    = applied as pure output gain
 inline constexpr std::array<int, kNumParams> kFeatureSlot { 1, 2, -1 };
 
 static_assert (kInputSize == 1 + kNumKnobs, "Feature vector must be audio plus one slot per knob.");
@@ -174,9 +172,15 @@ public:
     /** Knob ordering the embedded model expects, for display and for tests. */
     const juce::StringArray& getModelKnobOrder() const noexcept { return modelKnobOrder; }
 
+    /** Returns current host sample rate. */
+    double getHostSampleRate() const noexcept { return currentHostRate; }
+
+    /** True when host sample rate differs from the native 48 kHz model training rate. */
+    bool isResamplingActive() const noexcept { return needsResampling; }
+
 private:
     // -- network ------------------------------------------------------------
-    /** Declares the three knobs, in the order they appear on the pedal. */
+    /** Declares knobs and DSP parameters. */
     static juce::AudioProcessorValueTreeState::ParameterLayout makeLayout();
 
     /** Host thread: a parameter moved. Stores to an atomic for the audio thread. */
@@ -203,6 +207,28 @@ private:
     float smoothingCoeff = 1.0f;
 
     static constexpr const char* kParamId[kNumParams] { "sustain", "tone", "volume" };
+
+    // -- Resampling & transparent DC blocking ------------------------------
+    juce::dsp::FirstOrderTPTFilter<float> dcBlocker;
+    juce::dsp::IIR::Filter<float> antiAliasFilter;
+    juce::dsp::IIR::Filter<float> antiImageFilter;
+
+    double currentHostRate = 48000.0;
+    bool needsResampling = false;
+    double ratioIn = 1.0;
+    double ratioOut = 1.0;
+
+    static constexpr int kResampleBufferSize = 8192;
+    static constexpr int kResampleBufferMask = kResampleBufferSize - 1;
+    std::array<float, kResampleBufferSize> inFifo {};
+    std::array<float, kResampleBufferSize> outFifo {};
+    int inFifoWritePos = 2;
+    double inFifoReadPos = 0.0;
+    int outFifoWritePos = 2;
+    double outFifoReadPos = 0.0;
+
+    std::vector<float> monoScratch;
+    std::array<float, kNumParams> smoothedParams { { kDefaultKnob, kDefaultKnob, kDefaultKnob } };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PluginProcessor)
 };

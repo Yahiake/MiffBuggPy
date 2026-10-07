@@ -224,9 +224,15 @@ void PluginEditor::refreshStatus()
     // Volume is named explicitly rather than being absent from the line, because its
     // absence from `order` is a design decision and a reader of the UI has no way to
     // tell it apart from a knob that was simply forgotten.
+    juce::String rateText;
+    if (processor.isResamplingActive())
+        rateText = juce::String (processor.getHostSampleRate(), 0) + " Hz (Resampled to 48 kHz)";
+    else
+        rateText = "48000 Hz (Native)";
+
     status.setColour (juce::Label::textColourId, kTextDim);
     status.setText ("Network sees: " + orderText
-                      + juce::String ("\nVolume: output gain (not learned)")
+                      + juce::String ("\nVolume: output gain | Host: ") + rateText
                       + juce::String ("\nValidation ESR: ")
                       + juce::String (processor.getExportValEsr() * 100.0, 3) + " %",
                     juce::dontSendNotification);
