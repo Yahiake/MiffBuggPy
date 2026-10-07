@@ -4,6 +4,3 @@
 [submodule "modules/RTNeural"]
 	path = modules/RTNeural
 	url = https://github.com/jatinchowdhury18/RTNeural.git
-[submodule "modules/r8brain-free-src"]
-	path = modules/r8brain-free-src
-	url = https://github.com/avaneev/r8brain-free-src.git
