@@ -106,7 +106,6 @@ target_compile_definitions(MiffBuggPy PUBLIC
 target_sources(MiffBuggPy PRIVATE
     src/Plugin.cpp
     src/Editor.cpp
-    modules/r8brain-free-src/r8bbase.cpp
 )
 
 # The exported network is embedded so the built plugin is self-contained and does
