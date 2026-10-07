@@ -1,68 +1,192 @@
 #pragma once
-#define NOMINMAX
-#include "CDSPResampler.h"
 
 #include <algorithm>
 #include <cmath>
-#include <memory>
+#include <cstring>
 #include <vector>
 
 namespace Miffbuggpy
 {
 
 /**
+    Low-latency band-limited resampler (Kaiser-windowed sinc, streaming, mono).
+
+    Output sample n sits at input time n * inRate / outRate. An output is emitted as
+    soon as the kernel's right half has arrived, so the algorithmic delay is just the
+    kernel half-width (getLookahead() input samples), with no block/FFT latency.
+    Nothing allocates after prepare().
+*/
+class KaiserSincResampler
+{
+public:
+    /** Kernel half-width, in samples of the LOWER of the two rates. Quality vs latency. */
+    static constexpr int kHalf = 24;
+    static constexpr int kTableRes = 1024;
+
+    void prepare (double inRate, double outRate, int maxIn, double cutoffFraction)
+    {
+        step = inRate / outRate;
+        scale = std::min (1.0, outRate / inRate);
+        hs = (int) std::ceil ((double) kHalf / scale);
+
+        buildTable (cutoffFraction);
+
+        buf.assign ((size_t) (maxIn + 4 * hs + 16), 0.0f);
+        reset();
+    }
+
+    void reset()
+    {
+        std::fill (buf.begin(), buf.end(), 0.0f);
+        len = hs;
+        pos = (double) hs;
+    }
+
+    int getLookahead() const noexcept { return hs; }
+
+    /** Appends `n` input samples (n <= maxIn) and writes up to `maxOut` outputs. */
+    int process (const float* in, int n, float* out, int maxOut) noexcept
+    {
+        std::memcpy (buf.data() + len, in, (size_t) n * sizeof (float));
+        len += n;
+
+        const float* t = table.data();
+        const float maxX = (float) (table.size() - 2);
+        int produced = 0;
+
+        while (produced < maxOut)
+        {
+            const int i0 = (int) pos;
+            if (i0 + hs >= len)
+                break;
+
+            const double f = pos - (double) i0;
+            const float* x = buf.data() + (i0 - hs + 1);
+
+            // u = scale * (f - k) for k = -hs+1 ... hs, stepping down by `scale`
+            float u = (float) (scale * (f + (double) (hs - 1)));
+            const float us = (float) scale;
+            float acc = 0.0f;
+
+            for (int j = 0; j < 2 * hs; ++j, u -= us)
+            {
+                const float xi = (u + (float) kHalf) * (float) kTableRes;
+                if (xi <= 0.0f || xi >= maxX)
+                    continue;
+
+                const int ix = (int) xi;
+                const float fr = xi - (float) ix;
+                acc += x[j] * (t[ix] + (t[ix + 1] - t[ix]) * fr);
+            }
+
+            out[produced++] = acc * (float) scale;
+            pos += step;
+        }
+
+        // Drop samples no future output can need.
+        const int drop = (int) pos - hs;
+        if (drop > 0)
+        {
+            std::memmove (buf.data(), buf.data() + drop, (size_t) (len - drop) * sizeof (float));
+            len -= drop;
+            pos -= (double) drop;
+        }
+
+        return produced;
+    }
+
+private:
+    static double besselI0 (double x) noexcept
+    {
+        double sum = 1.0, term = 1.0;
+        const double q = x * x * 0.25;
+        for (int k = 1; k < 60; ++k)
+        {
+            term *= q / ((double) k * (double) k);
+            sum += term;
+            if (term < 1e-14 * sum)
+                break;
+        }
+        return sum;
+    }
+
+    void buildTable (double c)
+    {
+        constexpr double pi = 3.14159265358979323846;
+        constexpr double beta = 8.0;   // ~ 80+ dB stopband
+        const int size = 2 * kHalf * kTableRes + 2;
+        table.assign ((size_t) size, 0.0f);
+        const double i0b = besselI0 (beta);
+
+        for (int i = 0; i < size - 1; ++i)
+        {
+            const double u = (double) i / (double) kTableRes - (double) kHalf;
+            const double r = u / (double) kHalf;
+            if (std::abs (r) >= 1.0)
+                continue;
+
+            const double w = besselI0 (beta * std::sqrt (1.0 - r * r)) / i0b;
+            const double a = c * u;
+            const double s = std::abs (a) < 1e-12 ? 1.0 : std::sin (pi * a) / (pi * a);
+            table[(size_t) i] = (float) (c * s * w);
+        }
+    }
+
+    std::vector<float> table, buf;
+    double step = 1.0, scale = 1.0, pos = 0.0;
+    int hs = 1, len = 0;
+};
+
+/**
     host rate -> 48 kHz -> (model step per sample) -> host rate, mono.
-    All allocation happens in prepare(); process() is allocation-free.
+    Same interface as before: prepare / release / reset / getLatencySamples / process.
 */
 class FixedRateResampler
 {
 public:
     static constexpr double kModelRate = 48000.0;
-    static constexpr int kChunk = 256;                 // max host samples per r8brain call
-    static constexpr int kRingSize = 1 << 15;          // must be a power of two
+    static constexpr int kChunk = 256;
+    static constexpr int kRingSize = 1 << 15;
     static constexpr int kRingMask = kRingSize - 1;
+
+    /** Fraction of the lower Nyquist where the filter's -6 dB point sits. */
+    static constexpr double kCutoff = 0.97;
 
     void prepare (double hostRate)
     {
         hostRateStored = hostRate;
-        maxModelBlock = (int) std::ceil ((double) kChunk * kModelRate / hostRate) + 64;
-    
-        toModel = std::make_unique<r8b::CDSPResampler16> (hostRate, kModelRate, kChunk, 4.0);
-        toHost  = std::make_unique<r8b::CDSPResampler16> (kModelRate, hostRate, maxModelBlock, 4.0);
-    
-        hostBuf.assign ((size_t) kChunk, 0.0);
-        modelBuf.assign ((size_t) maxModelBlock, 0.0);
+        maxModelBlock = (int) std::ceil ((double) kChunk * kModelRate / hostRate) + 4;
+        maxHostBlock = (int) std::ceil ((double) maxModelBlock * hostRate / kModelRate) + 4;
+
+        toModel.prepare (hostRate, kModelRate, kChunk, kCutoff);
+        toHost.prepare (kModelRate, hostRate, maxModelBlock, kCutoff);
+
+        modelBuf.assign ((size_t) maxModelBlock, 0.0f);
+        hostOut.assign ((size_t) maxHostBlock, 0.0f);
         ring.assign ((size_t) kRingSize, 0.0f);
-    
-        primeZeros = measureWorstCaseDeficit() + 16;
+
+        primeZeros = measureWorstCaseDeficit() + 2;
+        active = true;
         reset();
     }
 
-    void release()
-    {
-        toModel.reset();
-        toHost.reset();
-    }
+    void release() { active = false; }
 
     void reset()
     {
-        if (toModel != nullptr) toModel->clear();
-        if (toHost != nullptr)  toHost->clear();
-
+        toModel.reset();
+        toHost.reset();
         std::fill (ring.begin(), ring.end(), 0.0f);
         rd = 0;
-        wr = primeZeros;       // FIFO starts holding `primeZeros` zeros
+        wr = primeZeros;
         count = primeZeros;
         underruns = 0;
     }
 
-    /** Host-rate latency to report with setLatencySamples(). */
     int getLatencySamples() const noexcept { return primeZeros; }
-
-    /** Should stay 0. Useful in a debug build / test. */
     int getUnderrunCount() const noexcept { return underruns; }
 
-    /** `in` and `out` may be the same pointer. `step` runs the model at 48 kHz: float -> float. */
+    /** `in` and `out` may be the same pointer. `step` runs the model at 48 kHz. */
     template <typename Step>
     void process (const float* in, float* out, int numSamples, Step&& step)
     {
@@ -72,21 +196,14 @@ public:
         {
             const int n = std::min (kChunk, numSamples - done);
 
-            for (int i = 0; i < n; ++i)
-                hostBuf[(size_t) i] = in != nullptr ? (double) in[done + i] : 0.0;
+            const int m = toModel.process (in != nullptr ? in + done : zeros(), n,
+                                           modelBuf.data(), maxModelBlock);
 
-            double* op = nullptr;
-            const int m = std::min (toModel->process (hostBuf.data(), n, op), maxModelBlock);
+            for (int i = 0; i < m; ++i)
+                modelBuf[(size_t) i] = step (modelBuf[(size_t) i]);
 
-            if (m > 0)
-            {
-                for (int i = 0; i < m; ++i)
-                    modelBuf[(size_t) i] = (double) step ((float) op[i]);
-
-                double* hp = nullptr;
-                const int k = toHost->process (modelBuf.data(), m, hp);
-                pushHost (hp, k);
-            }
+            const int k = toHost.process (modelBuf.data(), m, hostOut.data(), maxHostBlock);
+            pushHost (hostOut.data(), k);
 
             for (int i = 0; i < n; ++i)
                 out[done + i] = popHost();
@@ -96,12 +213,19 @@ public:
     }
 
 private:
-    void pushHost (const double* p, int k) noexcept
+    const float* zeros()
+    {
+        if (zeroBuf.size() < (size_t) kChunk)
+            zeroBuf.assign ((size_t) kChunk, 0.0f);
+        return zeroBuf.data();
+    }
+
+    void pushHost (const float* p, int k) noexcept
     {
         for (int i = 0; i < k; ++i)
         {
-            if (count >= kRingSize) { rd = (rd + 1) & kRingMask; --count; }   // drop oldest
-            ring[(size_t) wr] = (float) p[i];
+            if (count >= kRingSize) { rd = (rd + 1) & kRingMask; --count; }
+            ring[(size_t) wr] = p[i];
             wr = (wr + 1) & kRingMask;
             ++count;
         }
@@ -116,45 +240,36 @@ private:
         return v;
     }
 
-    /** Pushes 1 s of zeros through both stages and returns max (consumed - produced). */
+    /** One-sample-at-a-time simulation: max over time of (host in - host out). */
     int measureWorstCaseDeficit()
     {
-        toModel->clear();
-        toHost->clear();
+        toModel.reset();
+        toHost.reset();
 
+        float zero = 0.0f;
         long long consumed = 0, produced = 0, worst = 0;
-        const long long total = (long long) hostRateStored;   // ~1 second
+        const long long total = (long long) (hostRateStored * 0.25);
 
         while (consumed < total)
         {
-            const int n = 64;
-            std::fill (hostBuf.begin(), hostBuf.begin() + n, 0.0);
-            consumed += n;
-
-            double* op = nullptr;
-            const int m = std::min (toModel->process (hostBuf.data(), n, op), maxModelBlock);
-
+            ++consumed;
+            const int m = toModel.process (&zero, 1, modelBuf.data(), maxModelBlock);
             if (m > 0)
-            {
-                std::fill (modelBuf.begin(), modelBuf.begin() + m, 0.0);
-                double* hp = nullptr;
-                produced += toHost->process (modelBuf.data(), m, hp);
-            }
-
+                produced += toHost.process (modelBuf.data(), m, hostOut.data(), maxHostBlock);
             worst = std::max (worst, consumed - produced);
         }
 
         return (int) worst;
     }
 
-    std::unique_ptr<r8b::CDSPResampler16> toModel, toHost;
-    std::vector<double> hostBuf, modelBuf;
-    std::vector<float> ring;
+    KaiserSincResampler toModel, toHost;
+    std::vector<float> modelBuf, hostOut, ring, zeroBuf;
 
     double hostRateStored = 48000.0;
-    int maxModelBlock = 0;
+    int maxModelBlock = 0, maxHostBlock = 0;
     int primeZeros = 0;
     int rd = 0, wr = 0, count = 0, underruns = 0;
+    bool active = false;
 };
 
 } // namespace Miffbuggpy
