@@ -128,7 +128,6 @@ target_link_libraries(MiffBuggPy PUBLIC
 # RTNeural target does not add to its interface include path.
 target_include_directories(MiffBuggPy PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/modules/RTNeural/RTNeural"
-    "${CMAKE_CURRENT_SOURCE_DIR}/modules/r8brain-free-src"
 )
 
 # Must come after target_link_libraries. The generated header includes exactly the
