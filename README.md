@@ -1,4 +1,4 @@
-# MiffBuggPy
+# MiffBuggPy - Neural Big Muff Pi
 
 [![C++17](https://img.shields.io/badge/C%2B%2B-17-blue.svg)](https://isocpp.org/)
 [![JUCE](https://img.shields.io/badge/JUCE-8.0-orange.svg)](https://juce.com/)
