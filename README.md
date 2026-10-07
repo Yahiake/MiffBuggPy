@@ -2,7 +2,7 @@
 
 [![C++17](https://img.shields.io/badge/C%2B%2B-17-blue.svg)](https://isocpp.org/)
 [![JUCE](https://img.shields.io/badge/JUCE-8.0-orange.svg)](https://juce.com/)
-[![RTNeural](https://img.shields.io/badge/Inference-RTNeural%20AVX2-green.svg)](https://github.com/jatinchowdhury18/RTNeural)
+[![RTNeural](https://img.shields.io/badge/Inference-RTNeural.svg)](https://github.com/jatinchowdhury18/RTNeural)
 [![PyTorch](https://img.shields.io/badge/Training-PyTorch-red.svg)](https://pytorch.org/)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
