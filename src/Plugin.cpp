@@ -157,16 +157,6 @@ bool probeNetwork (Network& net, juce::String& errorOut)
     return true;
 }
 
-/** 4-point cubic Hermite / Catmull-Rom interpolation for transparent fractional resampling. */
-forcedinline float interpolateCatmullRom (float y0, float y1, float y2, float y3, float f) noexcept
-{
-    const float halfY0 = 0.5f * y0;
-    const float halfY3 = 0.5f * y3;
-    return y1 + f * ((0.5f * y2 - halfY0)
-           + (f * (((y0 + 2.0f * y2) - (halfY3 + 2.5f * y1))
-           + (f * ((halfY3 + 1.5f * y1) - (halfY0 + 1.5f * y2))))));
-}
-
 } // namespace
 
 // ===========================================================================
@@ -315,8 +305,6 @@ void PluginProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     currentHostRate = sampleRate;
     needsResampling = std::abs (sampleRate - 48000.0) > 1.0;
-    ratioIn = sampleRate / 48000.0;
-    ratioOut = 48000.0 / sampleRate;
 
     // Knob smoothing time constant (~15 ms) evaluated at the model's native 48 kHz clock
     const auto tauSeconds = 0.015;
@@ -336,32 +324,16 @@ void PluginProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     dcBlocker.setCutoffFrequency (15.0f);
     dcBlocker.reset();
 
-    // Anti-aliasing and anti-imaging filters when host rate exceeds 48 kHz
-    if (sampleRate > 48000.0)
-    {
-        antiAliasFilter.coefficients = juce::dsp::IIR::Coefficients<float>::makeLowPass (sampleRate, 20000.0);
-        antiAliasFilter.reset();
-        antiImageFilter.coefficients = juce::dsp::IIR::Coefficients<float>::makeLowPass (sampleRate, 20000.0);
-        antiImageFilter.reset();
-    }
-
-    inFifo.fill (0.0f);
-    outFifo.fill (0.0f);
-    inFifoWritePos = 2;
-    inFifoReadPos = 0.0;
-    outFifoWritePos = 2;
-    outFifoReadPos = 0.0;
-
-    monoScratch.resize (static_cast<size_t> (juce::jmax (samplesPerBlock * 2, 2048)));
-
     if (needsResampling)
     {
-        // 2 samples lookahead on input + 2 samples lookahead on output (scaled to host samples)
-        const int latencySamples = 2 + juce::roundToInt (2.0 * ratioIn);
-        setLatencySamples (latencySamples);
+        // Band-limited r8brain resampling in both directions. The latency it measures
+        // for itself is what gets reported to the host.
+        resampler.prepare (sampleRate);
+        setLatencySamples (resampler.getLatencySamples());
     }
     else
     {
+        resampler.release();
         setLatencySamples (0);
     }
 
@@ -402,8 +374,9 @@ double PluginProcessor::getTailLengthSeconds() const
 // kInputSize vector and returns one output sample.
 // The network is trained at 48000 Hz. If the host operates at 48000 Hz, audio flows
 // directly with zero resampling and zero latency. At any other sample rate,
-// transparent Catmull-Rom resampling runs around the network to ensure learned time
-// constants and tone stack filters match the physical circuit exactly.
+// band-limited r8brain resampling runs around the network (host rate -> 48 kHz ->
+// network -> host rate) to ensure learned time constants and tone stack filters
+// match the physical circuit exactly.
 // ===========================================================================
 
 void PluginProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
@@ -424,9 +397,6 @@ void PluginProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     }
 
     const auto* input = buffer.getReadPointer (0);
-
-    if (monoScratch.size() < static_cast<size_t> (numSamples))
-        monoScratch.resize (static_cast<size_t> (numSamples));
 
     // Lambda to step 1 neural inference sample at native 48 kHz
     std::array<float, kInputSize> frame {};
@@ -464,74 +434,16 @@ void PluginProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         return;
     }
 
-    // Resampled path (transparently locks model execution to 48 kHz)
-    // 1. Prepare input: optional anti-aliasing if host rate > 48 kHz, then push to inFifo
+    // Resampled path: host rate -> 48 kHz model -> host rate, band-limited both ways.
+    // Runs in place on channel 0, then the result is copied to any other channel.
+    auto* out0 = buffer.getWritePointer (0);
+    resampler.process (out0, out0, numSamples, stepModel48k);
+
     for (int n = 0; n < numSamples; ++n)
-    {
-        float inSamp = input != nullptr ? input[n] : 0.0f;
-        if (currentHostRate > 48000.0)
-            inSamp = antiAliasFilter.processSample (inSamp);
+        out0[n] = dcBlocker.processSample (0, out0[n]);
 
-        inFifo[(size_t) (inFifoWritePos & kResampleBufferMask)] = inSamp;
-        ++inFifoWritePos;
-    }
-
-    // 2. Generate required 48 kHz samples to cover this host block
-    const double endOutPos = outFifoReadPos + (double) (numSamples - 1) * ratioOut;
-    const int neededOutIndex = static_cast<int> (std::floor (endOutPos)) + 2;
-
-    while (outFifoWritePos <= neededOutIndex)
-    {
-        const int inIdx = static_cast<int> (std::floor (inFifoReadPos));
-        const float fIn = static_cast<float> (inFifoReadPos - (double) inIdx);
-
-        const float y0 = inFifo[(size_t) ((inIdx - 1) & kResampleBufferMask)];
-        const float y1 = inFifo[(size_t) (inIdx & kResampleBufferMask)];
-        const float y2 = inFifo[(size_t) ((inIdx + 1) & kResampleBufferMask)];
-        const float y3 = inFifo[(size_t) ((inIdx + 2) & kResampleBufferMask)];
-
-        const float x48k = interpolateCatmullRom (y0, y1, y2, y3, fIn);
-        inFifoReadPos += ratioIn;
-
-        const float y48k = stepModel48k (x48k);
-        outFifo[(size_t) (outFifoWritePos & kResampleBufferMask)] = y48k;
-        ++outFifoWritePos;
-    }
-
-    // 3. Reconstruct output at host rate
-    for (int n = 0; n < numSamples; ++n)
-    {
-        const int outIdx = static_cast<int> (std::floor (outFifoReadPos));
-        const float fOut = static_cast<float> (outFifoReadPos - (double) outIdx);
-
-        const float y0 = outFifo[(size_t) ((outIdx - 1) & kResampleBufferMask)];
-        const float y1 = outFifo[(size_t) (outIdx & kResampleBufferMask)];
-        const float y2 = outFifo[(size_t) ((outIdx + 1) & kResampleBufferMask)];
-        const float y3 = outFifo[(size_t) ((outIdx + 2) & kResampleBufferMask)];
-
-        float outSamp = interpolateCatmullRom (y0, y1, y2, y3, fOut);
-        outFifoReadPos += ratioOut;
-
-        if (currentHostRate > 48000.0)
-            outSamp = antiImageFilter.processSample (outSamp);
-
-        outSamp = dcBlocker.processSample (0, outSamp);
-
-        for (int ch = 0; ch < numChannels; ++ch)
-            buffer.setSample (ch, n, outSamp);
-    }
-
-    // Periodic position wrap to avoid any integer/floating overflow
-    if (inFifoReadPos >= (double) kResampleBufferSize)
-    {
-        inFifoReadPos -= (double) kResampleBufferSize;
-        inFifoWritePos -= kResampleBufferSize;
-    }
-    if (outFifoReadPos >= (double) kResampleBufferSize)
-    {
-        outFifoReadPos -= (double) kResampleBufferSize;
-        outFifoWritePos -= kResampleBufferSize;
-    }
+    for (int ch = 1; ch < numChannels; ++ch)
+        buffer.copyFrom (ch, 0, out0, numSamples);
 }
 
 // ===========================================================================

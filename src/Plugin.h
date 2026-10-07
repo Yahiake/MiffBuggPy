@@ -4,6 +4,7 @@
 #include <juce_dsp/juce_dsp.h>
 
 #include <RTNeural.h>
+#include "FixedRateResampler.h"
 
 #include <array>
 #include <atomic>
@@ -210,24 +211,11 @@ private:
 
     // -- Resampling & transparent DC blocking ------------------------------
     juce::dsp::FirstOrderTPTFilter<float> dcBlocker;
-    juce::dsp::IIR::Filter<float> antiAliasFilter;
-    juce::dsp::IIR::Filter<float> antiImageFilter;
 
     double currentHostRate = 48000.0;
     bool needsResampling = false;
-    double ratioIn = 1.0;
-    double ratioOut = 1.0;
 
-    static constexpr int kResampleBufferSize = 8192;
-    static constexpr int kResampleBufferMask = kResampleBufferSize - 1;
-    std::array<float, kResampleBufferSize> inFifo {};
-    std::array<float, kResampleBufferSize> outFifo {};
-    int inFifoWritePos = 2;
-    double inFifoReadPos = 0.0;
-    int outFifoWritePos = 2;
-    double outFifoReadPos = 0.0;
-
-    std::vector<float> monoScratch;
+	FixedRateResampler resampler;
     std::array<float, kNumParams> smoothedParams { { kDefaultKnob, kDefaultKnob, kDefaultKnob } };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PluginProcessor)
