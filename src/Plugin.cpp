@@ -170,11 +170,14 @@ PluginProcessor::PluginProcessor()
       parameters (*this, nullptr, "MIFFBUGGPY", makeLayout())
 {
     // The host thread writes these atomics; the audio thread only ever reads them.
+    // Output is in dB, so its default is 0 dB rather than the knobs' 0.5.
     for (int i = 0; i < kNumParams; ++i)
     {
-        targets[(size_t) i].store (kDefaultKnob);
+        targets[(size_t) i].store (i == kOutput ? 0.0f : kDefaultKnob);
         parameters.addParameterListener (kParamId[i], this);
     }
+
+    bypassValue = parameters.getRawParameterValue (kBypassParamId);
 
     loadModel();
 }
@@ -200,6 +203,18 @@ juce::AudioProcessorValueTreeState::ParameterLayout PluginProcessor::makeLayout(
         juce::ParameterID { kParamId[kTone], 1 }, "Tone", range, kDefaultKnob));
     layout.add (std::make_unique<juce::AudioParameterFloat> (
         juce::ParameterID { kParamId[kVolume], 1 }, "Volume", range, kDefaultKnob));
+
+    // Output level in dB, so what the user dials is exactly what gets let out:
+    // 0 dB is unity, -24 dB tames the pedal, +6 dB pushes it. 0.1 dB steps are
+    // finer than anyone can hear but still land on round values when typed.
+    const auto outRange = juce::NormalisableRange<float> (-24.0f, 6.0f, 0.1f);
+    layout.add (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { kParamId[kOutput], 1 }, "Output", outRange, 0.0f));
+
+    // A real bypass, not a knob trick: hosts map it, and processBlockBypassed
+    // passes audio through with every stage switched off.
+    layout.add (std::make_unique<juce::AudioParameterBool> (
+        juce::ParameterID { kBypassParamId, 1 }, "Bypass", false));
 
     return layout;
 }
@@ -292,7 +307,7 @@ void PluginProcessor::parameterChanged (const juce::String& parameterID, float n
     for (int i = 0; i < kNumParams; ++i)
         if (parameterID == kParamId[i])
         {
-            targets[(size_t) i].store (juce::jlimit (0.0f, 1.0f, newValue));
+            targets[(size_t) i].store (newValue); // parameter value is already range-clamped by JUCE.
             return;
         }
 }
@@ -304,7 +319,7 @@ void PluginProcessor::parameterChanged (const juce::String& parameterID, float n
 void PluginProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     currentHostRate = sampleRate;
-    needsResampling = std::abs (sampleRate - 48000.0) > 1.0;
+    needsResampling = std::abs (sampleRate - 48000.0) > 0.5;
 
     // Knob smoothing time constant (~15 ms) evaluated at the model's native 48 kHz clock
     const auto tauSeconds = 0.015;
@@ -326,7 +341,7 @@ void PluginProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 
     if (needsResampling)
     {
-        // Band-limited r8brain resampling in both directions. The latency it measures
+        // Band-limited resampling in both directions. The latency it measures
         // for itself is what gets reported to the host.
         resampler.prepare (sampleRate);
         setLatencySamples (resampler.getLatencySamples());
@@ -336,6 +351,12 @@ void PluginProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
         resampler.release();
         setLatencySamples (0);
     }
+
+    // Output chain: the limiter is not user-facing; it exists only so pushing
+    // Sustain and Output into the red saturates musically instead of clipping
+    // the host's output stream. Its ceiling stays pinned at full scale.
+    limiter.prepare (sampleRate);
+    limiter.setCeiling (1.0f);
 
     model.reset();
 }
@@ -374,12 +395,40 @@ double PluginProcessor::getTailLengthSeconds() const
 // kInputSize vector and returns one output sample.
 // The network is trained at 48000 Hz. If the host operates at 48000 Hz, audio flows
 // directly with zero resampling and zero latency. At any other sample rate,
-// band-limited r8brain resampling runs around the network (host rate -> 48 kHz ->
+// band-limited resampling runs around the network (host rate -> 48 kHz ->
 // network -> host rate) to ensure learned time constants and tone stack filters
 // match the physical circuit exactly.
+//
+// Output chain: model (wet) -> Output gain in dB -> DC blocker -> soft-knee
+// output limiter. Everything after the network runs at the host rate.
 // ===========================================================================
 
-void PluginProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
+juce::AudioProcessorParameter* PluginProcessor::getBypassParameter() const
+{
+    // Returning this makes the host's bypass button, our button and automation
+    // one and the same switch.
+    return parameters.getParameter (kBypassParamId);
+}
+
+void PluginProcessor::processBlockBypassed (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
+{
+    juce::ScopedNoDenormals noDenormals;
+
+    // True bypass: channel 0 already holds the input, so only the extra output
+    // channels need filling. No limiter, no DC blocker, no network state updates,
+    // so an engaged bypass never disturbs the fuzz's hidden state.
+    const auto numSamples = buffer.getNumSamples();
+    const auto numChannels = buffer.getNumChannels();
+
+    if (numChannels > 1 && numSamples > 0)
+    {
+        const auto* in0 = buffer.getReadPointer (0);
+        for (int ch = 1; ch < numChannels; ++ch)
+            buffer.copyFrom (ch, 0, in0, numSamples);
+    }
+}
+
+void PluginProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 {
     juce::ScopedNoDenormals noDenormals;
     const auto numSamples = buffer.getNumSamples();
@@ -387,6 +436,14 @@ void PluginProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
 
     if (numChannels == 0 || numSamples == 0)
         return;
+
+    // Bypass is checked before anything else: even with a failed model embed, a
+    // bypassed plugin is a cable, not a mute.
+    if (bypassValue != nullptr && *bypassValue > 0.5f)
+    {
+        processBlockBypassed (buffer, midiMessages);
+        return;
+    }
 
     if (! modelValid)
     {
@@ -397,6 +454,7 @@ void PluginProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     }
 
     const auto* input = buffer.getReadPointer (0);
+    auto* out0 = buffer.getWritePointer (0);
 
     // Lambda to step 1 neural inference sample at native 48 kHz
     std::array<float, kInputSize> frame {};
@@ -408,8 +466,8 @@ void PluginProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         {
             smoothedParams[(size_t) i] += smoothingCoeff * (targets[(size_t) i].load() - smoothedParams[(size_t) i]);
 
-            // Slot -1 is Volume: smoothed like the others so the gain does not step, but
-            // never written into the feature vector.
+            // Slots -1 are Volume and Output: smoothed like the others so they
+            // never step, but never written into the feature vector.
             if (kFeatureSlot[(size_t) i] >= 0)
                 frame[(size_t) kFeatureSlot[(size_t) i]] = smoothedParams[(size_t) i];
         }
@@ -426,7 +484,10 @@ void PluginProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         {
             const float inSamp = input != nullptr ? input[n] : 0.0f;
             float outSamp = stepModel48k (inSamp);
-            outSamp = dcBlocker.processSample (0, outSamp);
+
+            // Output level in dB: what the knob says is what gets let out.
+            outSamp *= juce::Decibels::decibelsToGain (smoothedParams[(size_t) kOutput]);
+            outSamp = limiter.processSample (dcBlocker.processSample (0, outSamp));
 
             for (int ch = 0; ch < numChannels; ++ch)
                 buffer.setSample (ch, n, outSamp);
@@ -434,13 +495,19 @@ void PluginProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         return;
     }
 
-    // Resampled path: host rate -> 48 kHz model -> host rate, band-limited both ways.
-    // Runs in place on channel 0, then the result is copied to any other channel.
-    auto* out0 = buffer.getWritePointer (0);
+    // Resampled path: host rate -> 48 kHz model -> host rate, band-limited both
+    // ways. Runs in place on channel 0, then the result is copied to any other
+    // channel.
     resampler.process (out0, out0, numSamples, stepModel48k);
 
+    const float outGain = juce::Decibels::decibelsToGain (smoothedParams[(size_t) kOutput]);
     for (int n = 0; n < numSamples; ++n)
-        out0[n] = dcBlocker.processSample (0, out0[n]);
+    {
+        float x = out0[n] * outGain;
+        x = dcBlocker.processSample (0, x);
+        x = limiter.processSample (x);
+        out0[n] = x;
+    }
 
     for (int ch = 1; ch < numChannels; ++ch)
         buffer.copyFrom (ch, 0, out0, numSamples);
@@ -449,6 +516,11 @@ void PluginProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
 // ===========================================================================
 // State
 // ===========================================================================
+
+float PluginProcessor::getOutputDb() const noexcept
+{
+    return smoothedParams[(size_t) kOutput];
+}
 
 void PluginProcessor::getStateInformation (juce::MemoryBlock& destData)
 {

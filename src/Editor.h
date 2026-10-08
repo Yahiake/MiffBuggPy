@@ -26,12 +26,12 @@ public:
 
 private:
     // -- layout -------------------------------------------------------------
-    static constexpr int kNumKnobsShown = 3;
-    static constexpr int kMargin = 18;
+    static constexpr int kNumKnobsShown = 4;
+    static constexpr int kMargin = 14;
     static constexpr int kHeaderHeight = 34;
     static constexpr int kStatusHeight = 46;
     static constexpr int kPreferredHeight = 300;
-    static constexpr int kPreferredWidth = 420;
+    static constexpr int kPreferredWidth = 470;
 
     void layoutKnobs();
 
@@ -46,6 +46,10 @@ private:
 
     juce::Label title;
     juce::Label status;
+
+    /** True bypass toggle, attached to the processor's "bypass" parameter. */
+    juce::ToggleButton bypassButton;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> bypassAttachment;
 
     /** Repaints the status line without touching parameters. */
     void timerCallback() override;

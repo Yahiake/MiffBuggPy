@@ -5,6 +5,7 @@
 
 #include <RTNeural.h>
 #include "FixedRateResampler.h"
+#include "OutputLimiter.h"
 
 #include <array>
 #include <atomic>
@@ -41,6 +42,9 @@ inline constexpr int kOutputSize = 1;
 
 /** Where every knob starts, and what a freshly loaded preset means by "default". */
 inline constexpr float kDefaultKnob = 0.5f;
+
+/** Parameter ID of the bypass toggle, shared by processor and editor. */
+inline constexpr const char* kBypassParamId = "bypass";
 
 // ===========================================================================
 // Volume.
@@ -84,22 +88,26 @@ enum KnobParam
     kSustain = 0,
     kTone = 1,
     kVolume = 2,
-    kNumParams = 3
+    kOutput = 3,
+    kNumParams = 4
 };
 
-// Which feature slot each UI knob is written into. -1 means the knob does not reach the
-// network at all.
+//
+// Where every UI knob reaches the processing chain. -1 means the knob never gets
+// near the network:
 //
 //   feature slot 0 = audio
 //   feature slot 1 = Sustain
 //   feature slot 2 = Tone
-//   Volume (-1)    = applied as pure output gain
-inline constexpr std::array<int, kNumParams> kFeatureSlot { 1, 2, -1 };
+//   Volume   (-1)  = applied as pure output gain
+//   Output   (-1)  = output level in dB, applied after the network
+inline constexpr std::array<int, kNumParams> kFeatureSlot { 1, 2, -1, -1 };
 
 static_assert (kInputSize == 1 + kNumKnobs, "Feature vector must be audio plus one slot per knob.");
-static_assert (kNumParams == kNumKnobs + 1,
-               "There is one knob more than there are conditioned inputs: Volume is applied "
-               "as gain and never reaches the network.");
+static_assert (kFeatureSlot[(size_t) kVolume] < 0
+                   && kFeatureSlot[(size_t) kOutput] < 0,
+               "Volume and Output must never be conditioned into the network: both are "
+               "applied as post-network gain stages.");
 
 // ===========================================================================
 // The network.
@@ -135,6 +143,10 @@ public:
 
     // --- processing --------------------------------------------------------
     void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
+    void processBlockBypassed (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
+
+    /** The bypass parameter, so hosts map their own bypass control to it. */
+    juce::AudioProcessorParameter* getBypassParameter() const override;
 
     // --- editor ------------------------------------------------------------
     juce::AudioProcessorEditor* createEditor() override;
@@ -202,21 +214,34 @@ private:
     // -- parameters ---------------------------------------------------------
     juce::AudioProcessorValueTreeState parameters;
 
-    /** Target values, written by the host thread and read by the audio thread. */
-    std::array<std::atomic<float>, kNumParams> targets { { kDefaultKnob, kDefaultKnob, kDefaultKnob } };
+    /** Target values, written by the host thread and read by the audio thread.
+        Output stores decibels, so its default is 0 dB, not 0.5. */
+    std::array<std::atomic<float>, kNumParams> targets { { kDefaultKnob, kDefaultKnob, kDefaultKnob, 0.0f } };
 
     float smoothingCoeff = 1.0f;
 
-    static constexpr const char* kParamId[kNumParams] { "sustain", "tone", "volume" };
+    static constexpr const char* kParamId[kNumParams] { "sustain", "tone", "volume", "output" };
+    static constexpr const char* kBypassParamId = "bypass";
+
+    float getOutputDb() const noexcept;
+    friend class PluginEditor;
 
     // -- Resampling & transparent DC blocking ------------------------------
     juce::dsp::FirstOrderTPTFilter<float> dcBlocker;
+
+    /** Output safety limiter (see OutputLimiter.h). Last stage in the chain. */
+    OutputLimiter limiter;
+
+    /** Per-sample smoothed values for every float knob (Output is smoothed in dB). */
+    std::array<float, kNumParams> smoothedParams { { kDefaultKnob, kDefaultKnob, kDefaultKnob, 0.0f } };
+
+    /** Raw bypass parameter value, host thread writes, audio thread loads. */
+    std::atomic<float>* bypassValue = nullptr;
 
     double currentHostRate = 48000.0;
     bool needsResampling = false;
 
 	FixedRateResampler resampler;
-    std::array<float, kNumParams> smoothedParams { { kDefaultKnob, kDefaultKnob, kDefaultKnob } };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PluginProcessor)
 };

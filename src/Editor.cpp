@@ -32,7 +32,8 @@ const char* paramIdFor (int i)
     {
         case kSustain: return "sustain";
         case kTone: return "tone";
-        default: return "volume";
+        case kVolume: return "volume";
+        default: return "output";
     }
 }
 } // namespace
@@ -108,7 +109,9 @@ void PluginEditor::KnobLook::drawRotarySlider (juce::Graphics& g,
 PluginEditor::PluginEditor (PluginProcessor& p)
     : AudioProcessorEditor (&p), processor (p)
 {
-    static const char* kNames[kNumKnobsShown] { "SUSTAIN", "TONE", "VOLUME" };
+    static const char* kNames[kNumKnobsShown] { "SUSTAIN", "TONE", "VOLUME", "OUTPUT" };
+    static const double kDoubleClickValue[kNumKnobsShown] { 0.5, 0.5, 0.5, 0.0 };
+    static const char* kSuffix[kNumKnobsShown] { "", "", "", " dB" };
 
     for (int i = 0; i < kNumKnobsShown; ++i)
     {
@@ -116,8 +119,8 @@ PluginEditor::PluginEditor (PluginProcessor& p)
 
         knob.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
         knob.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 70, 18);
-        knob.setRange (0.0, 1.0, 0.0);
-        knob.setDoubleClickReturnValue (true, 0.5);
+        knob.setTextValueSuffix (kSuffix[i]);
+        knob.setDoubleClickReturnValue (true, kDoubleClickValue[i]);
         knob.setLookAndFeel (&knobLook);
 
         auto attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
@@ -144,6 +147,17 @@ PluginEditor::PluginEditor (PluginProcessor& p)
     title.setColour (juce::Label::textColourId, kText);
     title.setFont (juce::Font (19.0f, juce::Font::bold));
     addAndMakeVisible (title);
+
+    // Bypass is a real AudioParameterBool mapped by the host, so the button,
+    // the host's own bypass control and automation all agree on one state.
+    bypassButton.setButtonText ("BYPASS");
+    bypassButton.setToggleState (false, juce::dontSendNotification);
+    bypassButton.setColour (juce::ToggleButton::textColourId, kTextDim);
+    bypassButton.setColour (juce::ToggleButton::tickColourId, kKnobPointer);
+    bypassButton.setColour (juce::ToggleButton::tickDisabledColourId, kTextDim);
+    bypassAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
+        processor.getState(), kBypassParamId, bypassButton);
+    addAndMakeVisible (bypassButton);
 
     status.setJustificationType (juce::Justification::centredLeft);
     status.setFont (juce::Font (11.0f));
@@ -178,7 +192,9 @@ void PluginEditor::resized()
 {
     auto area = getLocalBounds().reduced (kMargin);
 
-    title.setBounds (area.removeFromTop (kHeaderHeight));
+    auto header = area.removeFromTop (kHeaderHeight);
+    bypassButton.setBounds (header.removeFromRight (90).withSizeKeepingCentre (90, 24));
+    title.setBounds (header);
     area.removeFromTop (6);
 
     status.setBounds (area.removeFromBottom (kStatusHeight));
@@ -231,8 +247,8 @@ void PluginEditor::refreshStatus()
         rateText = "48000 Hz (Native)";
 
     status.setColour (juce::Label::textColourId, kTextDim);
-    status.setText ("Network sees: " + orderText
-                      + juce::String ("\nVolume: output gain | Host: ") + rateText,
+    status.setText (juce::String ("Network sees: ") + orderText
+                      + juce::String ("\nVolume: output gain | Output: ") + juce::String (processor.getOutputDb(), 1) + " dB | Host: " + rateText,
                     juce::dontSendNotification);
 }
 

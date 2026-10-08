@@ -68,6 +68,7 @@ public:
             const float us = (float) scale;
             float acc = 0.0f;
 
+            const int phIdx = (int) (f * (double) kTableRes) % kTableRes;
             for (int j = 0; j < 2 * hs; ++j, u -= us)
             {
                 const float xi = (u + (float) kHalf) * (float) kTableRes;
@@ -79,6 +80,7 @@ public:
                 acc += x[j] * (t[ix] + (t[ix + 1] - t[ix]) * fr);
             }
 
+            acc *= phaseNorm[(size_t) phIdx];
             out[produced++] = acc * (float) scale;
             pos += step;
         }
@@ -130,9 +132,37 @@ private:
             const double s = std::abs (a) < 1e-12 ? 1.0 : std::sin (pi * a) / (pi * a);
             table[(size_t) i] = (float) (c * s * w);
         }
+
+        // Per-subphase normalization: for each fractional phase, sum of coefficients = 1.0
+        // This reduces gain variation across fractional delays
+        for (int ph = 0; ph < kTableRes; ++ph)
+        {
+            double f = (double) ph / (double) kTableRes;
+            double sum = 0.0;
+            double u = (double) (f + (double) (kHalf - 1));
+            for (int j = 0; j < 2 * kHalf; ++j, u -= 1.0)
+            {
+                double xi = (u + (double) kHalf) * (double) kTableRes;
+                if (xi <= 0.0 || xi >= (double)(size - 2))
+                    continue;
+                int ix = (int) xi;
+                double fr = xi - (double) ix;
+                if (ix >= 0 && ix < size - 1)
+                {
+                    float v0 = table[(size_t) ix];
+                    float v1 = table[(size_t) (ix + 1)];
+                    sum += (double) v0 + (double)(v1 - v0) * fr;
+                }
+            }
+            if (sum > 1e-12)
+                phaseNorm[(size_t) ph] = (float) (1.0 / sum);
+            else
+                phaseNorm[(size_t) ph] = 1.0f;
+        }
     }
 
     std::vector<float> table, buf;
+    std::vector<float> phaseNorm = std::vector<float>(kTableRes, 1.0f);
     double step = 1.0, scale = 1.0, pos = 0.0;
     int hs = 1, len = 0;
 };
@@ -145,7 +175,7 @@ class FixedRateResampler
 {
 public:
     static constexpr double kModelRate = 48000.0;
-    static constexpr int kChunk = 256;
+    static constexpr int kChunk = 128;
     static constexpr int kRingSize = 1 << 15;
     static constexpr int kRingMask = kRingSize - 1;
 
